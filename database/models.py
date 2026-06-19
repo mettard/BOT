@@ -1,0 +1,57 @@
+"""SQLAlchemy models for CoffeeRun bot."""
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    """Base class for all models."""
+    pass
+
+
+class User(Base):
+    """Telegram user model."""
+    __tablename__ = "users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    first_name: Mapped[str] = mapped_column(String(255))
+    last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
+class Order(Base):
+    """Customer order model."""
+    __tablename__ = "orders"
+
+    order_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    telegram_id: Mapped[int] = mapped_column(Integer, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255))
+    phone: Mapped[str] = mapped_column(String(20))
+    drink_name: Mapped[str] = mapped_column(String(255))
+    volume_ml: Mapped[int] = mapped_column(Integer)
+    price: Mapped[float] = mapped_column()
+    pickup_time: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(50), default="New", index=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
