@@ -1,7 +1,7 @@
 """Order handling router with FSM flow."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
 from aiogram import F, Router, types
@@ -57,11 +57,10 @@ MESSAGES = {
     "invalid_time": (
         "❌ <b>Неправильний час.</b>\n\n"
         "Введи як: <code>10 хв</code>, <code>20 хв</code> або <code>15:30</code>\n\n"
-        "⏰ Кав'ярня працює: 09:00–21:00\n"
         "Макс. упередження: 12 годин"
     ),
     "time_in_past": "❌ Цей час вже пройшов. Виберіть майбутній час.",
-    "time_outside_hours": "❌ Кав'ярня працює лише 09:00–21:00. Виберіть час у межах роботи.",
+    "time_outside_hours": "❌ Кав'ярня зачинена у цей час. Ми працюємо з {open_time} до {close_time}.",
     "time_too_far": "❌ Максимальне упередження — 12 годин. Виберіть раніший час.",
     "invalid_phone": (
         "❌ <b>Неправильний формат номера.</b>\n\n"
@@ -123,39 +122,65 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
 
 @router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
+@router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
 async def drink_selected_handler(
     query: types.CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
-    """Handle drink selection."""
+    """Handle drink selection with instant shop status check."""
     logger.info(f"User {query.from_user.id} selected drink")
 
     try:
-        # Get menu from context
+        # 🚀 МИТТЄВА ПЕРЕВІРКА ЧАСУ РОБОТИ З GOOGLE ТАБЛИЦЬ
+        sheets_service = await get_sheets_service()
+        config = await sheets_service.get_business_config()
+        
+        open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+        close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+        
+        current_time = datetime.now().time()  # Поточний час прямо зараз
+        
+        try:
+            open_parts = open_time_str.split(":")
+            close_parts = close_time_str.split(":")
+            start_work = time(int(open_parts[0]), int(open_parts[1]))
+            end_work = time(int(close_parts[0]), int(close_parts[1]))
+            
+            # Якщо кав'ярня ПРЯМО ЗАРАЗ зачинена — зупиняємо процес замовлення
+            if not (start_work <= current_time <= end_work):
+                nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
+                nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+                
+                await query.message.answer(
+                    f"⏸ <b>На жаль, кав'ярня зараз зачинена.</b>\n\n"
+                    f"Ми приймаємо замовлення лише в робочий час з <code>{nice_open}</code> до <code>{nice_close}</code>.\n"
+                    f"Завітайте до нас пізніше! ☕️",
+                    parse_mode="HTML"
+                )
+                await query.answer()
+                await state.clear()  # Скидаємо FSM, щоб користувач не завис у процесі
+                return
+        except Exception as parse_err:
+            logger.error(f"Error parsing table times in instant check: {parse_err}")
+
+        # --- Далі йде стандартний код вибору напою ---
         data = await state.get_data()
         menu = data.get("menu", [])
 
-        # Parse drink index
         drink_idx = int(query.data.split("_")[1])
         if drink_idx >= len(menu):
             await query.answer("❌ Напій не знайдений", show_alert=True)
             return
 
         drink = menu[drink_idx]
-
-        # Store drink in context
         await state.update_data(selected_drink=drink)
-
-        # Acknowledge callback
+        
         await query.answer()
-
-        # Ask for time
         await query.message.answer(MESSAGES["time_prompt"], parse_mode="HTML")
         await state.set_state(OrderFSM.time_input)
 
     except Exception as e:
         logger.error(f"Error in drink_selected_handler: {e}")
         await query.answer("❌ Помилка при виборі напою", show_alert=True)
-
 
 @router.message(OrderFSM.time_input)
 async def time_input_handler(message: types.Message, state: FSMContext) -> None:
@@ -169,17 +194,51 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
             await message.answer(MESSAGES["invalid_time"], parse_mode="HTML")
             return
 
-        # Validate time
+        # 🚀 ДИНАМІЧНИЙ КОНФІГ З GOOGLE TABLES
+        sheets_service = await get_sheets_service()
+        config = await sheets_service.get_business_config()
+        
+        open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+        close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+
+        # Базова валідація на минулий час і 12 годин вперед
         is_valid, error_key = validate_pickup_time(pickup_time)
-        if not is_valid:
+        if not is_valid and error_key != "MSG_104":  # Ігноруємо старий MSG_104, перевіримо нижче самі
             error_msg = {
                 "MSG_103": MESSAGES["time_in_past"],
-                "MSG_104": MESSAGES["time_outside_hours"],
                 "MSG_105": MESSAGES["time_too_far"],
             }.get(error_key, MESSAGES["invalid_time"])
 
             await message.answer(error_msg, parse_mode="HTML")
             return
+
+        # Валідація робочих годин на базі значень з таблиці
+        try:
+            # Розбиваємо час і беремо ТІЛЬКИ перші два елементи [0] і [1], ігноруючи секунди
+            open_parts = open_time_str.split(":")
+            close_parts = close_time_str.split(":")
+            
+            open_h, open_m = int(open_parts[0]), int(open_parts[1])
+            close_h, close_m = int(close_parts[0]), int(close_parts[1])
+            
+            start_work = time(open_h, open_m)
+            end_work = time(close_h, close_m)
+            
+            # Перевіряємо саме час замовлення (без дати)
+            order_time = pickup_time.time()
+            
+            if not (start_work <= order_time <= end_work):
+                # Форматуємо час красиво назад для повідомлення клієнту (без секунд)
+                nice_open = f"{open_h:02d}:{open_m:02d}"
+                nice_close = f"{close_h:02d}:{close_m:02d}"
+                
+                await message.answer(
+                    MESSAGES["time_outside_hours"].format(open_time=nice_open, close_time=nice_close),
+                    parse_mode="HTML"
+                )
+                return
+        except Exception as parse_err:
+            logger.error(f"Error parsing table times ({open_time_str}/{close_time_str}): {parse_err}")
 
         # Store time in context
         await state.update_data(pickup_time=pickup_time)

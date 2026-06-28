@@ -228,7 +228,35 @@ class GoogleSheetsService:
             logger.error(f"Error updating order status: {e}")
             return False
 
+    async def get_business_config(self) -> dict[str, str]:
+            """Fetch cafe open and close times from Config sheet horizontally."""
+            try:
+                spreadsheet = await self._get_spreadsheet()
 
+                def _get_config_data() -> list[list[Any]]:
+                    worksheet = spreadsheet.worksheet(CONFIG_SHEET)
+                    # Беремо чисту матрицю значень (всі заповнені рядки й стовпчики)
+                    return worksheet.get_all_values()
+
+                rows = await self._retry_operation(_get_config_data)
+                
+                # Якщо таблиця порожня або там менше 2 рядків — повертаємо дефолт
+                if len(rows) < 2:
+                    return {"CAFE_OPEN_TIME": "09:00", "CAFE_CLOSE_TIME": "23:59"}
+                    
+                headers = rows[0]  # Перший рядок: ['CAFE_OPEN_TIME', 'CAFE_CLOSE_TIME']
+                values = rows[1]   # Другий рядок: ['09:00', '23:59']
+                
+                # Зліплюємо їх у зручний словник за допомогою zip
+                config = {}
+                for header, val in zip(headers, values):
+                    if header:
+                        config[header.strip()] = val.strip()
+                        
+                return config
+            except Exception as e:
+                logger.error(f"Error fetching business config: {e}")
+                return {"CAFE_OPEN_TIME": "09:00", "CAFE_CLOSE_TIME": "23:59"}
 # Global service instance
 _sheets_service: Optional[GoogleSheetsService] = None
 
