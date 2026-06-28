@@ -175,6 +175,7 @@ async def drink_selected_handler(
         await state.update_data(selected_drink=drink)
         
         await query.answer()
+        await query.message.edit_reply_markup(reply_markup=None)
         await query.message.answer(MESSAGES["time_prompt"], parse_mode="HTML")
         await state.set_state(OrderFSM.time_input)
 
@@ -364,6 +365,7 @@ async def confirm_order_handler(
         )
 
         await query.answer()
+        await query.message.edit_reply_markup(reply_markup=None)
         await query.message.answer(success_text, parse_mode="HTML")
 
         # Clear FSM
@@ -392,6 +394,7 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
         if isinstance(message_or_query, types.CallbackQuery):
             query = message_or_query
             await query.answer()
+            await query.message.edit_reply_markup(reply_markup=None)
             await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
         else:
             message = message_or_query
