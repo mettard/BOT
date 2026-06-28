@@ -9,6 +9,7 @@ class OrderFSM(StatesGroup):
     menu_selection = State()
     time_input = State()
     phone_input = State()
+    notes_input = State()
     confirmation = State()
 
 

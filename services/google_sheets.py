@@ -148,6 +148,7 @@ class GoogleSheetsService:
         price: float,
         pickup_time: str,
         status: str = "New",
+        notes: str = "",
     ) -> bool:
         """Append order to Orders sheet.
         
@@ -159,7 +160,7 @@ class GoogleSheetsService:
             price: Price
             pickup_time: Pickup time (ISO format)
             status: Order status
-            
+            notes: Additional notes
         Returns:
             True if successful
         """
@@ -179,7 +180,7 @@ class GoogleSheetsService:
                     price,
                     pickup_time,
                     status,
-                    "",  # Notes
+                    notes,  # Notes
                 ]
                 worksheet.append_row(row)
                 return True

@@ -32,6 +32,7 @@ class AdminNotificationService:
         volume_ml: int,
         price: float,
         pickup_time: datetime,
+        notes: str = "",
     ) -> int | None:
         """Send order notification to admin chat.
         
@@ -43,14 +44,14 @@ class AdminNotificationService:
             volume_ml: Volume in ml
             price: Price in UAH
             pickup_time: Pickup time
-            
+            notes: Additional notes
         Returns:
             Message ID if sent successfully, None otherwise
         """
         try:
             # Format pickup time
             pickup_str = pickup_time.strftime("%Y-%m-%d %H:%M:%S")
-
+            notes_text = f"📝 <b>Побажання:</b> <i>{notes}</i>\n\n" if notes else ""
             # Build message text (HTML format)
             message = (
                 f"📋 <b>Нове замовлення</b>\n\n"
@@ -60,6 +61,7 @@ class AdminNotificationService:
                 f"📱 <b>Телефон:</b> <code>{phone}</code>\n\n"
                 f"☕ <b>Напій:</b> {drink_name} ({volume_ml}ml)\n"
                 f"💰 <b>Ціна:</b> ₴{price}\n\n"
+                f"{notes_text}"
                 f"🔔 <b>Статус:</b> 🆕 Нове"
             )
 

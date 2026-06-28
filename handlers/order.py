@@ -10,7 +10,13 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.crud import OrderCRUD, UserCRUD
-from bot.keyboards.inline import get_confirmation_keyboard, get_menu_keyboard, get_back_to_menu_keyboard, get_back_to_time_keyboard
+from bot.keyboards.inline import (
+    get_confirmation_keyboard, 
+    get_menu_keyboard, 
+    get_back_to_menu_keyboard, 
+    get_back_to_time_keyboard,
+    get_notes_keyboard  # Додано нову клавіатуру
+)
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
 from bot.services.validators import (
@@ -40,11 +46,17 @@ MESSAGES = {
         "📱 <b>Вкажи свій телефон</b>\n\n"
         "Формат: <code>+380xxxxxxxxx</code> або <code>0xxxxxxxxx</code>"
     ),
+    "notes_prompt": (
+        "📝 <b>Чи є побажання до замовлення?</b>\n\n"
+        "Наприклад: <i>без цукру</i>, <i>більше льоду</i>, <i>на безлактозному</i>.\n\n"
+        "Напиши їх сюди або натисни «Пропустити»."
+    ),
     "confirmation": (
         "✅ <b>Підтвердження замовлення</b>\n\n"
         "☕ Напій: <b>{drink_name}</b> ({volume}ml)\n"
         "💰 Ціна: <b>₴{price}</b>\n"
         "⏰ Час забору: <b>{pickup_time}</b>\n\n"
+        "{notes_text}"
         "Се правильно? Натисни <b>Підтвердити</b>"
     ),
     "success": (
@@ -82,7 +94,6 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
     logger.info(f"User {message.from_user.id} started bot")
 
     try:
-        # Get or create user
         await UserCRUD.get_or_create(
             session=session,
             telegram_id=message.from_user.id,
@@ -90,7 +101,6 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
             last_name=message.from_user.last_name,
         )
 
-        # Fetch menu from Google Sheets
         sheets_service = await get_sheets_service()
         menu = await sheets_service.get_menu()
 
@@ -98,21 +108,17 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
             await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
             return
 
-        # Формуємо красивий текстовий рядок для меню
         menu_items_text = ""
         for item in menu:
             menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
-        # Build keyboard
-        keyboard = get_menu_keyboard(menu)
 
-        # Send menu message
+        keyboard = get_menu_keyboard(menu)
         await message.answer(
             MESSAGES["menu"].format(menu_items=menu_items_text),
             parse_mode="HTML",
             reply_markup=keyboard,
         )
 
-        # Store menu in context for later access
         await state.update_data(menu=menu)
         await state.set_state(OrderFSM.menu_selection)
 
@@ -122,7 +128,6 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
 
 @router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
-@router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
 async def drink_selected_handler(
     query: types.CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
@@ -130,14 +135,13 @@ async def drink_selected_handler(
     logger.info(f"User {query.from_user.id} selected drink")
 
     try:
-        # 🚀 МИТТЄВА ПЕРЕВІРКА ЧАСУ РОБОТИ З GOOGLE ТАБЛИЦЬ
         sheets_service = await get_sheets_service()
         config = await sheets_service.get_business_config()
         
         open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
         close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
         
-        current_time = datetime.now().time()  # Поточний час прямо зараз
+        current_time = datetime.now().time()
         
         try:
             open_parts = open_time_str.split(":")
@@ -145,7 +149,6 @@ async def drink_selected_handler(
             start_work = time(int(open_parts[0]), int(open_parts[1]))
             end_work = time(int(close_parts[0]), int(close_parts[1]))
             
-            # Якщо кав'ярня ПРЯМО ЗАРАЗ зачинена — зупиняємо процес замовлення
             if not (start_work <= current_time <= end_work):
                 nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
                 nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
@@ -157,12 +160,11 @@ async def drink_selected_handler(
                     parse_mode="HTML"
                 )
                 await query.answer()
-                await state.clear()  # Скидаємо FSM, щоб користувач не завис у процесі
+                await state.clear()
                 return
         except Exception as parse_err:
             logger.error(f"Error parsing table times in instant check: {parse_err}")
 
-        # --- Далі йде стандартний код вибору напою ---
         data = await state.get_data()
         menu = data.get("menu", [])
 
@@ -175,7 +177,6 @@ async def drink_selected_handler(
         await state.update_data(selected_drink=drink)
         
         await query.answer()
-        await query.message.edit_reply_markup(reply_markup=None)
         await query.message.edit_text(MESSAGES["time_prompt"], parse_mode="HTML", reply_markup=get_back_to_menu_keyboard())
         await state.set_state(OrderFSM.time_input)
 
@@ -183,28 +184,26 @@ async def drink_selected_handler(
         logger.error(f"Error in drink_selected_handler: {e}")
         await query.answer("❌ Помилка при виборі напою", show_alert=True)
 
+
 @router.message(OrderFSM.time_input)
 async def time_input_handler(message: types.Message, state: FSMContext) -> None:
     """Handle time input."""
     logger.info(f"User {message.from_user.id} entered time: {message.text}")
 
     try:
-        # Parse time input
         pickup_time = parse_time_input(message.text)
         if pickup_time is None:
             await message.answer(MESSAGES["invalid_time"], parse_mode="HTML")
             return
 
-        # 🚀 ДИНАМІЧНИЙ КОНФІГ З GOOGLE TABLES
         sheets_service = await get_sheets_service()
         config = await sheets_service.get_business_config()
         
         open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
         close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
 
-        # Базова валідація на минулий час і 12 годин вперед
         is_valid, error_key = validate_pickup_time(pickup_time)
-        if not is_valid and error_key != "MSG_104":  # Ігноруємо старий MSG_104, перевіримо нижче самі
+        if not is_valid and error_key != "MSG_104":
             error_msg = {
                 "MSG_103": MESSAGES["time_in_past"],
                 "MSG_105": MESSAGES["time_too_far"],
@@ -213,9 +212,7 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
             await message.answer(error_msg, parse_mode="HTML")
             return
 
-        # Валідація робочих годин на базі значень з таблиці
         try:
-            # Розбиваємо час і беремо ТІЛЬКИ перші два елементи [0] і [1], ігноруючи секунди
             open_parts = open_time_str.split(":")
             close_parts = close_time_str.split(":")
             
@@ -225,11 +222,9 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
             start_work = time(open_h, open_m)
             end_work = time(close_h, close_m)
             
-            # Перевіряємо саме час замовлення (без дати)
             order_time = pickup_time.time()
             
             if not (start_work <= order_time <= end_work):
-                # Форматуємо час красиво назад для повідомлення клієнту (без секунд)
                 nice_open = f"{open_h:02d}:{open_m:02d}"
                 nice_close = f"{close_h:02d}:{close_m:02d}"
                 
@@ -241,10 +236,7 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
         except Exception as parse_err:
             logger.error(f"Error parsing table times ({open_time_str}/{close_time_str}): {parse_err}")
 
-        # Store time in context
         await state.update_data(pickup_time=pickup_time)
-
-        # Ask for phone
         await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.set_state(OrderFSM.phone_input)
 
@@ -261,41 +253,68 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
     try:
         phone = message.text.strip()
 
-        # Validate phone
         if not validate_phone(phone):
             await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
             return
 
-        # Normalize phone
         normalized_phone = normalize_phone(phone)
-
-        # Store phone in context
         await state.update_data(phone=normalized_phone)
 
-        # Get data and prepare confirmation
-        data = await state.get_data()
-        drink = data.get("selected_drink", {})
-        pickup_time = data.get("pickup_time")
-
-        pickup_time_str = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
-
-        # Show confirmation
-        confirmation_text = MESSAGES["confirmation"].format(
-            drink_name=drink.get("name", "—"),
-            volume=drink.get("volume", "—"),
-            price=drink.get("price", "—"),
-            pickup_time=pickup_time_str,
-        )
-
-        keyboard = get_confirmation_keyboard()
-        await message.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
-
-        await state.set_state(OrderFSM.confirmation)
+        # ЗАПИТУЄМО КОМЕНТАР ЗАМІСТЬ ПІДТВЕРДЖЕННЯ
+        await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+        await state.set_state(OrderFSM.notes_input)
 
     except Exception as e:
         logger.error(f"Error in phone_input_handler: {e}")
         await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
 
+# ==========================================
+# ХЕНДЛЕРИ КОМЕНТАРІВ (НОВІ)
+# ==========================================
+
+async def _show_confirmation(message_or_query: types.Message | types.CallbackQuery, state: FSMContext):
+    """Helper to generate and show the confirmation screen."""
+    data = await state.get_data()
+    drink = data.get("selected_drink", {})
+    pickup_time = data.get("pickup_time")
+    notes = data.get("notes", "")
+
+    pickup_time_str = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
+    notes_text = f"📝 Побажання: <b>{notes}</b>\n\n" if notes else ""
+
+    confirmation_text = MESSAGES["confirmation"].format(
+        drink_name=drink.get("name", "—"),
+        volume=drink.get("volume", "—"),
+        price=drink.get("price", "—"),
+        pickup_time=pickup_time_str,
+        notes_text=notes_text
+    )
+
+    keyboard = get_confirmation_keyboard()
+
+    if isinstance(message_or_query, types.CallbackQuery):
+        await message_or_query.message.edit_text(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+
+    await state.set_state(OrderFSM.confirmation)
+
+@router.message(OrderFSM.notes_input)
+async def notes_input_handler(message: types.Message, state: FSMContext) -> None:
+    """Handle text notes input."""
+    logger.info(f"User {message.from_user.id} entered notes")
+    await state.update_data(notes=message.text.strip())
+    await _show_confirmation(message, state)
+
+@router.callback_query(OrderFSM.notes_input, F.data == "skip_notes")
+async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle skip notes button."""
+    logger.info(f"User {query.from_user.id} skipped notes")
+    await state.update_data(notes="")
+    await query.answer()
+    await _show_confirmation(query, state)
+
+# ==========================================
 
 @router.callback_query(OrderFSM.confirmation, F.data == "confirm_order")
 async def confirm_order_handler(
@@ -305,16 +324,14 @@ async def confirm_order_handler(
     logger.info(f"User {query.from_user.id} confirmed order")
 
     try:
-        # Get data
         data = await state.get_data()
         drink = data.get("selected_drink", {})
         pickup_time = data.get("pickup_time")
         phone = data.get("phone")
+        notes = data.get("notes", "")
 
-        # Generate order number
         order_number = generate_order_number()
 
-        # Create order in DB
         order = await OrderCRUD.create(
             session=session,
             order_number=order_number,
@@ -327,7 +344,6 @@ async def confirm_order_handler(
             pickup_time=pickup_time,
         )
 
-        # Send to Google Sheets
         sheets_service = await get_sheets_service()
         pickup_time_str = pickup_time.isoformat() if pickup_time else ""
         await sheets_service.append_order(
@@ -338,9 +354,9 @@ async def confirm_order_handler(
             price=drink.get("price", 0),
             pickup_time=pickup_time_str,
             status="New",
+            notes=notes, # Передаємо коментар у Google Sheets
         )
 
-        # Send notification to admin
         from aiogram import Bot
         from bot.config import settings
 
@@ -355,9 +371,9 @@ async def confirm_order_handler(
             volume_ml=drink.get("volume", 0),
             price=drink.get("price", 0),
             pickup_time=pickup_time,
+            notes=notes, # Передаємо коментар в адмінську групу
         )
 
-        # Show success message
         pickup_time_str_display = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
         success_text = MESSAGES["success"].format(
             order_id=order_number,
@@ -365,12 +381,9 @@ async def confirm_order_handler(
         )
 
         await query.answer()
-        await query.message.edit_reply_markup(reply_markup=None)
         await query.message.edit_text(success_text, parse_mode="HTML")
 
-        # Clear FSM
         await state.clear()
-
         logger.info(f"Order {order_number} created successfully")
 
     except Exception as e:
@@ -383,9 +396,7 @@ async def confirm_order_handler(
 
 @router.callback_query(StateFilter(OrderFSM.time_input), F.data == "back_to_menu")
 async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext) -> None:
-    """Go back to menu selection."""
     logger.info(f"User {query.from_user.id} went back to menu")
-    
     data = await state.get_data()
     menu = data.get("menu")
 
@@ -399,48 +410,69 @@ async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext) ->
         menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
 
     keyboard = get_menu_keyboard(menu)
-
     await query.message.edit_text(
         MESSAGES["menu"].format(menu_items=menu_items_text),
         parse_mode="HTML",
         reply_markup=keyboard
     )
-    
     await state.set_state(OrderFSM.menu_selection)
     await query.answer()
 
 
 @router.callback_query(StateFilter(OrderFSM.phone_input), F.data == "back_to_time")
 async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
-    """Go back to time input."""
     logger.info(f"User {query.from_user.id} went back to time input")
-    
     await query.message.edit_text(
         MESSAGES["time_prompt"],
         parse_mode="HTML",
         reply_markup=get_back_to_menu_keyboard()
     )
-    
     await state.set_state(OrderFSM.time_input)
     await query.answer()
 
 
+@router.callback_query(StateFilter(OrderFSM.notes_input), F.data == "back_to_phone")
+async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """Go back to phone input from notes."""
+    logger.info(f"User {query.from_user.id} went back to phone input")
+    await query.message.edit_text(
+        MESSAGES["phone_prompt"],
+        parse_mode="HTML",
+        reply_markup=get_back_to_time_keyboard()
+    )
+    await state.set_state(OrderFSM.phone_input)
+    await query.answer()
+
+
+@router.callback_query(StateFilter(OrderFSM.confirmation), F.data == "back_to_notes")
+async def back_to_notes_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """Go back to notes input from confirmation."""
+    logger.info(f"User {query.from_user.id} went back to notes input")
+    await query.message.edit_text(
+        MESSAGES["notes_prompt"],
+        parse_mode="HTML",
+        reply_markup=get_notes_keyboard()
+    )
+    await state.set_state(OrderFSM.notes_input)
+    await query.answer()
+
+
 # ==========================================
-# ЧИСТИЛЬНИК СТАРИХ КНОПОК (UX-Магія)
+# ЧИСТИЛЬНИК СТАРИХ КНОПОК
 # ==========================================
 
-@router.callback_query(F.data.in_(["back_to_menu", "back_to_time"]))
+@router.callback_query(F.data.in_(["back_to_menu", "back_to_time", "back_to_phone", "back_to_notes"]))
 async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
     """Catch clicks on old back buttons from chat history and remove them."""
-    # Якщо бот сюди дійшов, значить користувач клікнув кнопку НЕ в тому стані
     await query.answer("⏳ Цей крок вже пройдено", show_alert=False)
-    # Знищуємо стару клавіатуру, щоб вона більше не плутала клієнта
     await query.message.edit_reply_markup(reply_markup=None)
+
 
 @router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
 @router.callback_query(OrderFSM.menu_selection, F.data == "cancel_order")
 @router.callback_query(OrderFSM.time_input, F.data == "cancel_order")
 @router.callback_query(OrderFSM.phone_input, F.data == "cancel_order")
+@router.callback_query(OrderFSM.notes_input, F.data == "cancel_order")
 @router.callback_query(OrderFSM.confirmation, F.data == "cancel_order")
 @router.message(Command("cancel"))
 async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, state: FSMContext) -> None:
@@ -449,7 +481,6 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
 
     try:
         await state.clear()
-
         if isinstance(message_or_query, types.CallbackQuery):
             query = message_or_query
             await query.answer()

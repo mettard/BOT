@@ -34,8 +34,17 @@ def get_confirmation_keyboard() -> InlineKeyboardMarkup:
 
     builder.button(text="✅ Підтвердити", callback_data="confirm_order")
     builder.button(text="❌ Скасувати", callback_data="cancel_order")
+    builder.button(text="🔙 Назад", callback_data="back_to_notes")
 
-    builder.adjust(2)  # 2 buttons per row
+    builder.adjust(2, 1)  # 2 buttons per row
+    return builder.as_markup()
+
+def get_notes_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for notes step (skip and back)."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏭ Пропустити", callback_data="skip_notes")
+    builder.button(text="🔙 Назад", callback_data="back_to_phone")
+    builder.adjust(1, 1)
     return builder.as_markup()
 
 
