@@ -48,3 +48,16 @@ def get_cancel_button() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="⏸ Скасувати замовлення", callback_data="cancel_flow")
     return builder.as_markup()
+
+
+def get_back_to_menu_keyboard() -> InlineKeyboardMarkup:
+    """Build inline keyboard to go back to menu."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Назад до меню", callback_data="back_to_menu")
+    return builder.as_markup()
+
+def get_back_to_time_keyboard() -> InlineKeyboardMarkup:
+    """Build inline keyboard to go back to time input."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Назад", callback_data="back_to_time")
+    return builder.as_markup()

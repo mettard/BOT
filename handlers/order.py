@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.crud import OrderCRUD, UserCRUD
-from bot.keyboards.inline import get_confirmation_keyboard, get_menu_keyboard
+from bot.keyboards.inline import get_confirmation_keyboard, get_menu_keyboard, get_back_to_menu_keyboard, get_back_to_time_keyboard
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
 from bot.services.validators import (
@@ -176,7 +176,7 @@ async def drink_selected_handler(
         
         await query.answer()
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.answer(MESSAGES["time_prompt"], parse_mode="HTML")
+        await query.message.edit_text(MESSAGES["time_prompt"], parse_mode="HTML", reply_markup=get_back_to_menu_keyboard())
         await state.set_state(OrderFSM.time_input)
 
     except Exception as e:
@@ -245,7 +245,7 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
         await state.update_data(pickup_time=pickup_time)
 
         # Ask for phone
-        await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML")
+        await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.set_state(OrderFSM.phone_input)
 
     except Exception as e:
@@ -366,7 +366,7 @@ async def confirm_order_handler(
 
         await query.answer()
         await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.answer(success_text, parse_mode="HTML")
+        await query.message.edit_text(success_text, parse_mode="HTML")
 
         # Clear FSM
         await state.clear()
@@ -377,6 +377,65 @@ async def confirm_order_handler(
         logger.error(f"Error in confirm_order_handler: {e}")
         await query.answer("❌ Помилка при збереженні замовлення", show_alert=True)
 
+# ==========================================
+# ХЕНДЛЕРИ КНОПОК "НАЗАД"
+# ==========================================
+
+@router.callback_query(StateFilter(OrderFSM.time_input), F.data == "back_to_menu")
+async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """Go back to menu selection."""
+    logger.info(f"User {query.from_user.id} went back to menu")
+    
+    data = await state.get_data()
+    menu = data.get("menu")
+
+    if not menu:
+        sheets_service = await get_sheets_service()
+        menu = await sheets_service.get_menu()
+        await state.update_data(menu=menu)
+
+    menu_items_text = ""
+    for item in menu:
+        menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
+
+    keyboard = get_menu_keyboard(menu)
+
+    await query.message.edit_text(
+        MESSAGES["menu"].format(menu_items=menu_items_text),
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    
+    await state.set_state(OrderFSM.menu_selection)
+    await query.answer()
+
+
+@router.callback_query(StateFilter(OrderFSM.phone_input), F.data == "back_to_time")
+async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    """Go back to time input."""
+    logger.info(f"User {query.from_user.id} went back to time input")
+    
+    await query.message.edit_text(
+        MESSAGES["time_prompt"],
+        parse_mode="HTML",
+        reply_markup=get_back_to_menu_keyboard()
+    )
+    
+    await state.set_state(OrderFSM.time_input)
+    await query.answer()
+
+
+# ==========================================
+# ЧИСТИЛЬНИК СТАРИХ КНОПОК (UX-Магія)
+# ==========================================
+
+@router.callback_query(F.data.in_(["back_to_menu", "back_to_time"]))
+async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
+    """Catch clicks on old back buttons from chat history and remove them."""
+    # Якщо бот сюди дійшов, значить користувач клікнув кнопку НЕ в тому стані
+    await query.answer("⏳ Цей крок вже пройдено", show_alert=False)
+    # Знищуємо стару клавіатуру, щоб вона більше не плутала клієнта
+    await query.message.edit_reply_markup(reply_markup=None)
 
 @router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
 @router.callback_query(OrderFSM.menu_selection, F.data == "cancel_order")
