@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time
 from typing import Any
 
-from aiogram import F, Router, types
+from aiogram import Bot, F, Router, types
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,8 @@ from bot.keyboards.inline import (
     get_back_to_time_keyboard,
     get_notes_keyboard,  # Додано нову клавіатуру
     get_time_keyboard,          # ДОДАЛИ
-    get_phone_reply_keyboard    # ДОДАЛИ
+    get_phone_reply_keyboard,
+    get_user_cancel_keyboard
 )
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
@@ -349,20 +350,23 @@ async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext) -> N
 
 @router.callback_query(OrderFSM.confirmation, F.data == "confirm_order")
 async def confirm_order_handler(
-    query: types.CallbackQuery, state: FSMContext, session: AsyncSession
+    query: types.CallbackQuery, state: FSMContext, session: AsyncSession, bot: Bot
 ) -> None:
     """Handle order confirmation."""
     logger.info(f"User {query.from_user.id} confirmed order")
 
     try:
+        # Get data
         data = await state.get_data()
         drink = data.get("selected_drink", {})
         pickup_time = data.get("pickup_time")
         phone = data.get("phone")
-        notes = data.get("notes", "")
+        notes = data.get("notes", "")  # Дістаємо побажання (якщо вони є)
 
+        # Generate order number
         order_number = generate_order_number()
 
+        # Create order in DB
         order = await OrderCRUD.create(
             session=session,
             order_number=order_number,
@@ -375,6 +379,7 @@ async def confirm_order_handler(
             pickup_time=pickup_time,
         )
 
+        # Send to Google Sheets
         sheets_service = await get_sheets_service()
         pickup_time_str = pickup_time.isoformat() if pickup_time else ""
         await sheets_service.append_order(
@@ -385,16 +390,17 @@ async def confirm_order_handler(
             price=drink.get("price", 0),
             pickup_time=pickup_time_str,
             status="New",
-            notes=notes, # Передаємо коментар у Google Sheets
+            notes=notes,
         )
 
-        from aiogram import Bot
-        from bot.config import settings
-
-        bot = Bot(token=settings.bot_token)
+        # Send notification to admin
+        from bot.services.notifications import AdminNotificationService
+        
+        # Використовуємо існуючого бота з параметрів функції!
         notification_service = AdminNotificationService(bot)
 
-        await notification_service.send_order_notification(
+        # ЗБЕРІГАЄМО ID картки баристи
+        admin_msg_id = await notification_service.send_order_notification(
             order_number=order_number,
             customer_name=query.from_user.first_name,
             phone=phone,
@@ -402,10 +408,12 @@ async def confirm_order_handler(
             volume_ml=drink.get("volume", 0),
             price=drink.get("price", 0),
             pickup_time=pickup_time,
-            notes=notes, # Передаємо коментар в адмінську групу
+            notes=notes,
             user_id=query.from_user.id,
+            receipt_msg_id=query.message.message_id,  
         )
 
+        # Show success message
         pickup_time_str_display = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
         success_text = MESSAGES["success"].format(
             order_id=order_number,
@@ -413,15 +421,25 @@ async def confirm_order_handler(
         )
 
         await query.answer()
-        await query.message.edit_text(success_text, parse_mode="HTML")
+        await query.message.edit_reply_markup(reply_markup=None)
+        
+        # Передаємо admin_msg_id у кнопку скасування клієнта
+        safe_admin_msg_id = admin_msg_id if admin_msg_id else 0
+        from bot.keyboards.inline import get_user_cancel_keyboard
+        await query.message.edit_text(
+            success_text, 
+            parse_mode="HTML",
+            reply_markup=get_user_cancel_keyboard(order_number, safe_admin_msg_id)
+        )
 
+        # Clear FSM
         await state.clear()
+
         logger.info(f"Order {order_number} created successfully")
 
     except Exception as e:
         logger.error(f"Error in confirm_order_handler: {e}")
         await query.answer("❌ Помилка при збереженні замовлення", show_alert=True)
-
 # ==========================================
 # ХЕНДЛЕРИ КНОПОК "НАЗАД"
 # ==========================================
@@ -506,6 +524,60 @@ async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
     await query.message.edit_reply_markup(reply_markup=None)
 
 
+@router.callback_query(F.data.startswith("usr_cancel:"))
+async def user_cancel_active_order_handler(query: types.CallbackQuery) -> None:
+    """Обробляє спробу клієнта скасувати вже створене замовлення."""
+    
+    # Розпаковуємо дані (тепер у нас 3 елементи: назва, номер_замовлення, ID_повідомлення_адміна)
+    parts = query.data.split(":")
+    order_number = parts[1]
+    admin_msg_id = int(parts[2]) if len(parts) > 2 else 0
+    
+    await query.message.edit_reply_markup(reply_markup=None)
+    
+    sheets_service = await get_sheets_service()
+    current_status = await sheets_service.get_order_status(order_number)
+    
+    if current_status in ["🔥 Готується", "✅ Готово"]:
+        await query.answer("⚠️ Сорі, бариста вже готує вашу каву! Скасувати неможливо.", show_alert=True)
+        return
+        
+    if current_status == "❌ Скасовано":
+        await query.answer("Це замовлення вже скасовано.", show_alert=True)
+        return
+        
+    try:
+        await sheets_service.update_order_status(order_number, "❌ Скасовано")
+        
+        from bot.config import settings
+        
+        # 💥 МАГІЯ: ВИДАЛЯЄМО СТАРУ КАРТКУ ЗАМОВЛЕННЯ У БАРИСТИ!
+        if admin_msg_id != 0:
+            try:
+                await query.bot.delete_message(chat_id=settings.admin_chat_id, message_id=admin_msg_id)
+            except Exception as e:
+                import logging
+                logging.error(f"Не зміг видалити повідомлення адміна: {e}")
+
+        # Відправляємо свіже повідомлення-алерт
+        await query.bot.send_message(
+            chat_id=settings.admin_chat_id,
+            text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!\n🗑 <i>Картку замовлення було видалено.</i>",
+            parse_mode="HTML"
+        )
+        
+        await query.message.edit_text(
+            f"❌ Ваше замовлення <b>{order_number}</b> успішно скасовано.\n\nЧекаємо вас наступного разу! ☕️",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        await query.answer("Замовлення скасовано.")
+        
+    except Exception as e:
+        import logging
+        logging.error(f"Помилка при скасуванні активного замовлення: {e}")
+        await query.answer("Виникла технічна помилка. Напишіть баристі.", show_alert=True)
+
 @router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
 @router.callback_query(OrderFSM.menu_selection, F.data == "cancel_order")
 @router.callback_query(OrderFSM.time_input, F.data == "cancel_order")
@@ -546,49 +618,80 @@ STATUS_MAP = {
 async def admin_status_handler(query: types.CallbackQuery) -> None:
     """Обробляє зміну статусу з динамічним оновленням ЄДИНОГО повідомлення у клієнта."""
     
+    # Розпаковуємо дані (тепер у нас 6 елементів)
     parts = query.data.split(":")
-    if len(parts) != 5:
+    if len(parts) < 5:
         await query.answer("❌ Помилка даних кнопки", show_alert=True)
         return
         
-    _, status_key, order_number, user_id_str, client_msg_id_str = parts
-    user_id = int(user_id_str)
-    client_msg_id = int(client_msg_id_str)
-    
-    status_name, client_message = STATUS_MAP.get(status_key, ("Невідомо", ""))
-    
-    # 1. Оновлюємо статус в Google Таблицях
+    status_key = parts[1]
+    order_number = parts[2]
+    user_id = int(parts[3])
+    client_msg_id = int(parts[4])
+    receipt_msg_id = int(parts[5]) if len(parts) >= 6 else 0
+
+    # 1. ЗАХИСТ ВІД "МЕРТВИХ КНОПОК"
     try:
         from bot.services.google_sheets import get_sheets_service
         sheets_service = await get_sheets_service()
+        current_sheet_status = await sheets_service.get_order_status(order_number)
+        
+        if current_sheet_status == "❌ Скасовано":
+            await query.answer("⚠️ Клієнт вже самостійно скасував це замовлення!", show_alert=True)
+            old_text = query.message.html_text
+            import re
+            new_text = re.sub(r"🔔 <b>Статус:</b>.*", f"🔔 <b>Статус:</b> ❌ Скасовано (клієнтом)", old_text)
+            await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=None)
+            return
+    except Exception as e:
+        import logging
+        logging.error(f"Помилка перевірки актуального статусу: {e}")
+
+    # ==========================================
+    # 💥 НОВЕ: ЗНИЩУЄМО КНОПКУ "СКАСУВАТИ" У КЛІЄНТА
+    # ==========================================
+    # Якщо бариста натиснув "Готується", "Готово" або "Скасувати"
+    if status_key in ["prep", "rdy", "canc"] and receipt_msg_id != 0:
+        try:
+            # Змінюємо клавіатуру оригінального чека на None (порожнечу)
+            await query.bot.edit_message_reply_markup(
+                chat_id=user_id, 
+                message_id=receipt_msg_id, 
+                reply_markup=None
+            )
+        except Exception as e:
+            import logging
+            logging.error(f"Не зміг прибрати кнопку скасування у клієнта: {e}")
+    # ==========================================
+    
+    status_name, client_message = STATUS_MAP.get(status_key, ("Невідомо", ""))
+    
+    # 2. Оновлюємо статус в Google Таблицях
+    try:
         await sheets_service.update_order_status(order_number, status_name)
     except Exception as e:
-        logger.error(f"Не вдалося оновити статус в таблиці: {e}")
+        import logging
+        logging.error(f"Не вдалося оновити статус в таблиці: {e}")
 
-    # 2. МАГІЯ ЄДИНОГО ВІКНА + PUSH-ПОВІДОМЛЕННЯ
+    # 3. МАГІЯ ЄДИНОГО ВІКНА + PUSH-ПОВІДОМЛЕННЯ
     formatted_message = client_message.format(order_number=order_number)
     new_client_msg_id = client_msg_id
 
     try:
         if status_key in ["rdy", "canc"]:
-            # Коли кава ГОТОВА або СКАСОВАНА — ВИДАЛЯЄМО старе повідомлення і ВІДПРАВЛЯЄМО нове.
-            # Це гарантовано викличе гучний PUSH на телефоні клієнта!
             if client_msg_id != 0:
                 try:
                     await query.bot.delete_message(chat_id=user_id, message_id=client_msg_id)
                 except Exception:
-                    pass  # Якщо клієнт випадково сам видалив повідомлення, просто ігноруємо помилку
-            
+                    pass
             msg = await query.bot.send_message(chat_id=user_id, text=formatted_message, parse_mode="HTML")
             new_client_msg_id = msg.message_id
 
         elif client_msg_id == 0:
-            # Це перший крок (Прийнято) — відправляємо перше повідомлення (теж PUSH 🔔)
             msg = await query.bot.send_message(chat_id=user_id, text=formatted_message, parse_mode="HTML")
             new_client_msg_id = msg.message_id
             
         else:
-            # Крок "Готується" — просто тихо оновлюємо текст (Беззвучно 🔕)
             await query.bot.edit_message_text(
                 chat_id=user_id,
                 message_id=client_msg_id,
@@ -596,18 +699,21 @@ async def admin_status_handler(query: types.CallbackQuery) -> None:
                 parse_mode="HTML"
             )
     except Exception as e:
-        logger.error(f"Не зміг оновити/відправити повідомлення клієнту {user_id}: {e}")
+        import logging
+        logging.error(f"Не зміг оновити/відправити повідомлення клієнту {user_id}: {e}")
 
-    # 3. Генеруємо нову клавіатуру для адміна, зберігаючи новий ID повідомлення
+    # 4. Генеруємо нову клавіатуру для адміна (передаємо обидва ID)
     new_keyboard = get_admin_order_keyboard(
         order_number, 
         user_id, 
         current_status=status_key, 
-        client_msg_id=new_client_msg_id
+        client_msg_id=new_client_msg_id,
+        receipt_msg_id=receipt_msg_id
     )
     
-    # 4. Оновлюємо адмінську картку баристи
+    # 5. Оновлюємо адмінську картку баристи
     old_text = query.message.html_text
+    import re
     new_text = re.sub(r"🔔 <b>Статус:</b>.*", f"🔔 <b>Статус:</b> {status_name}", old_text)
     
     await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)

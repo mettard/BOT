@@ -228,6 +228,26 @@ class GoogleSheetsService:
         except Exception as e:
             logger.error(f"Error updating order status: {e}")
             return False
+    
+    async def get_order_status(self, order_number: str) -> str | None:
+        """Шукає замовлення в таблиці і повертає його поточний статус."""
+        try:
+            spreadsheet = await self._get_spreadsheet()
+            
+            def _get_status():
+                worksheet = spreadsheet.worksheet("Orders") # Вкажи тут назву свого аркуша, якщо вона інша
+                cell = worksheet.find(order_number)
+                if cell:
+                    # Статус лежить у 8-й колонці (H)
+                    return worksheet.cell(cell.row, 8).value
+                return None
+                
+            return await self._retry_operation(_get_status)
+        except Exception as e:
+            import logging
+            logging.error(f"Помилка при отриманні статусу з таблиці: {e}")
+            return None
+
 
     async def get_business_config(self) -> dict[str, str]:
             """Fetch cafe open and close times from Config sheet horizontally."""

@@ -35,6 +35,7 @@ class AdminNotificationService:
         pickup_time: datetime,
         notes: str = "",
         user_id: int = 0,
+        receipt_msg_id: int = 0,
     ) -> int | None:
         """Send order notification to admin chat.
         
@@ -47,6 +48,7 @@ class AdminNotificationService:
             price: Price in UAH
             pickup_time: Pickup time
             notes: Additional notes
+            receipt_msg_id: Message ID of the receipt
         Returns:
             Message ID if sent successfully, None otherwise
         """
@@ -83,7 +85,7 @@ class AdminNotificationService:
                 ]
             )
 
-            keyboard = get_admin_order_keyboard(order_number, user_id)
+            keyboard = get_admin_order_keyboard(order_number, user_id, receipt_msg_id=receipt_msg_id)
             # Send message
             msg = await self.bot.send_message(
                 chat_id=self.admin_chat_id,
