@@ -1,6 +1,6 @@
 """Inline and reply keyboards for CoffeeRun bot."""
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
@@ -93,3 +93,22 @@ def get_admin_order_keyboard(order_number: str, user_id: int, current_status: st
         return None
         
     return builder.as_markup()
+
+
+def get_time_keyboard() -> InlineKeyboardMarkup:
+    """Клавіатура для часу з швидкими варіантами."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="10 хв", callback_data="quick_time:10")
+    builder.button(text="15 хв", callback_data="quick_time:15")
+    builder.button(text="20 хв", callback_data="quick_time:20")
+    builder.button(text="🔙 Назад до меню", callback_data="back_to_menu")
+    builder.adjust(3, 1) # 3 кнопки в ряд, 1 під ними
+    return builder.as_markup()
+
+def get_phone_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Нижня кнопка ТІЛЬКИ для контакту."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Надіслати мій номер", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )

@@ -9,13 +9,18 @@ from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aiogram.types import ReplyKeyboardRemove
+from datetime import timedelta
+
 from bot.database.crud import OrderCRUD, UserCRUD
 from bot.keyboards.inline import (
     get_confirmation_keyboard, 
     get_menu_keyboard, 
     get_back_to_menu_keyboard, 
     get_back_to_time_keyboard,
-    get_notes_keyboard  # Додано нову клавіатуру
+    get_notes_keyboard,  # Додано нову клавіатуру
+    get_time_keyboard,          # ДОДАЛИ
+    get_phone_reply_keyboard    # ДОДАЛИ
 )
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
@@ -177,13 +182,31 @@ async def drink_selected_handler(
         await state.update_data(selected_drink=drink)
         
         await query.answer()
-        await query.message.edit_text(MESSAGES["time_prompt"], parse_mode="HTML", reply_markup=get_back_to_menu_keyboard())
+        await query.message.edit_text(
+            MESSAGES["time_prompt"], 
+            parse_mode="HTML", 
+            reply_markup=get_time_keyboard()
+        )
         await state.set_state(OrderFSM.time_input)
-
     except Exception as e:
         logger.error(f"Error in drink_selected_handler: {e}")
         await query.answer("❌ Помилка при виборі напою", show_alert=True)
 
+
+@router.callback_query(OrderFSM.time_input, F.data.startswith("quick_time:"))
+async def quick_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+    minutes = int(query.data.split(":")[1])
+    pickup_time = datetime.now() + timedelta(minutes=minutes)
+    
+    await state.update_data(pickup_time=pickup_time)
+    await query.message.edit_reply_markup(reply_markup=None)
+    
+    # Трюк з двома повідомленнями
+    await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
+    await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+    
+    await state.set_state(OrderFSM.phone_input)
+    await query.answer()
 
 @router.message(OrderFSM.time_input)
 async def time_input_handler(message: types.Message, state: FSMContext) -> None:
@@ -242,16 +265,22 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
 
     except Exception as e:
         logger.error(f"Error in time_input_handler: {e}")
-        await message.answer(MESSAGES["invalid_time"], parse_mode="HTML")
+        await state.update_data(pickup_time=pickup_time)
+        
+        await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
+        await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        
+        await state.set_state(OrderFSM.phone_input)
 
 
 @router.message(OrderFSM.phone_input)
 async def phone_input_handler(message: types.Message, state: FSMContext) -> None:
-    """Handle phone input."""
     logger.info(f"User {message.from_user.id} entered phone")
-
     try:
-        phone = message.text.strip()
+        if message.contact:
+            phone = message.contact.phone_number
+        else:
+            phone = message.text.strip()
 
         if not validate_phone(phone):
             await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
@@ -260,14 +289,16 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
         normalized_phone = normalize_phone(phone)
         await state.update_data(phone=normalized_phone)
 
-        # ЗАПИТУЄМО КОМЕНТАР ЗАМІСТЬ ПІДТВЕРДЖЕННЯ
+        # Непомітно прибираємо нижню клавіатуру
+        remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
+        await remove_msg.delete()
+
         await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
         await state.set_state(OrderFSM.notes_input)
 
     except Exception as e:
         logger.error(f"Error in phone_input_handler: {e}")
         await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
-
 # ==========================================
 # ХЕНДЛЕРИ КОМЕНТАРІВ (НОВІ)
 # ==========================================
@@ -423,11 +454,17 @@ async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext) ->
 @router.callback_query(StateFilter(OrderFSM.phone_input), F.data == "back_to_time")
 async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
     logger.info(f"User {query.from_user.id} went back to time input")
+    
+    # Непомітно прибираємо нижню клавіатуру
+    remove_msg = await query.message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+    await remove_msg.delete()
+    
     await query.message.edit_text(
         MESSAGES["time_prompt"],
         parse_mode="HTML",
-        reply_markup=get_back_to_menu_keyboard()
+        reply_markup=get_time_keyboard()
     )
+    
     await state.set_state(OrderFSM.time_input)
     await query.answer()
 
