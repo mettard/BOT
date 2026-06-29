@@ -70,3 +70,26 @@ def get_back_to_time_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🔙 Назад", callback_data="back_to_time")
     return builder.as_markup()
+
+def get_admin_order_keyboard(order_number: str, user_id: int, current_status: str = "new", client_msg_id: int = 0) -> InlineKeyboardMarkup | None:
+    """Динамічна клавіатура для керування статусом замовлення (з пам'яттю повідомлення клієнта)."""
+    builder = InlineKeyboardBuilder()
+    
+    if current_status == "new":
+        builder.button(text="🟡 Прийняти", callback_data=f"adm_st:acc:{order_number}:{user_id}:{client_msg_id}")
+        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}:{client_msg_id}")
+        builder.adjust(2)
+        
+    elif current_status == "acc":
+        builder.button(text="🔥 Готується", callback_data=f"adm_st:prep:{order_number}:{user_id}:{client_msg_id}")
+        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}:{client_msg_id}")
+        builder.adjust(2)
+        
+    elif current_status == "prep":
+        builder.button(text="✅ Готово", callback_data=f"adm_st:rdy:{order_number}:{user_id}:{client_msg_id}")
+        builder.adjust(1)
+        
+    else:
+        return None
+        
+    return builder.as_markup()

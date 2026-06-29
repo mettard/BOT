@@ -7,6 +7,7 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.config import settings
+from bot.keyboards.inline import get_admin_order_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class AdminNotificationService:
         price: float,
         pickup_time: datetime,
         notes: str = "",
+        user_id: int = 0,
     ) -> int | None:
         """Send order notification to admin chat.
         
@@ -81,6 +83,7 @@ class AdminNotificationService:
                 ]
             )
 
+            keyboard = get_admin_order_keyboard(order_number, user_id)
             # Send message
             msg = await self.bot.send_message(
                 chat_id=self.admin_chat_id,

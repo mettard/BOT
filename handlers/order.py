@@ -372,6 +372,7 @@ async def confirm_order_handler(
             price=drink.get("price", 0),
             pickup_time=pickup_time,
             notes=notes, # Передаємо коментар в адмінську групу
+            user_id=query.from_user.id,
         )
 
         pickup_time_str_display = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
@@ -492,3 +493,85 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
 
     except Exception as e:
         logger.error(f"Error in cancel_handler: {e}")
+
+
+import re
+from bot.keyboards.inline import get_admin_order_keyboard
+
+STATUS_MAP = {
+    "acc": ("🟡 Прийнято", "Ваше замовлення <b>{order_number}</b> прийнято і скоро почне готуватися! ⏳"),
+    "prep": ("🔥 Готується", "Бариста вже чаклує над вашим замовленням <b>{order_number}</b>! ☕️"),
+    "rdy": ("✅ Готово", "🎉 Ваша кава <b>{order_number}</b> готова! Можете забирати на барі!"),
+    "canc": ("❌ Скасовано", "На жаль, ваше замовлення <b>{order_number}</b> було скасовано.")
+}
+
+@router.callback_query(F.data.startswith("adm_st:"))
+async def admin_status_handler(query: types.CallbackQuery) -> None:
+    """Обробляє зміну статусу з динамічним оновленням ЄДИНОГО повідомлення у клієнта."""
+    
+    parts = query.data.split(":")
+    if len(parts) != 5:
+        await query.answer("❌ Помилка даних кнопки", show_alert=True)
+        return
+        
+    _, status_key, order_number, user_id_str, client_msg_id_str = parts
+    user_id = int(user_id_str)
+    client_msg_id = int(client_msg_id_str)
+    
+    status_name, client_message = STATUS_MAP.get(status_key, ("Невідомо", ""))
+    
+    # 1. Оновлюємо статус в Google Таблицях
+    try:
+        from bot.services.google_sheets import get_sheets_service
+        sheets_service = await get_sheets_service()
+        await sheets_service.update_order_status(order_number, status_name)
+    except Exception as e:
+        logger.error(f"Не вдалося оновити статус в таблиці: {e}")
+
+    # 2. МАГІЯ ЄДИНОГО ВІКНА + PUSH-ПОВІДОМЛЕННЯ
+    formatted_message = client_message.format(order_number=order_number)
+    new_client_msg_id = client_msg_id
+
+    try:
+        if status_key in ["rdy", "canc"]:
+            # Коли кава ГОТОВА або СКАСОВАНА — ВИДАЛЯЄМО старе повідомлення і ВІДПРАВЛЯЄМО нове.
+            # Це гарантовано викличе гучний PUSH на телефоні клієнта!
+            if client_msg_id != 0:
+                try:
+                    await query.bot.delete_message(chat_id=user_id, message_id=client_msg_id)
+                except Exception:
+                    pass  # Якщо клієнт випадково сам видалив повідомлення, просто ігноруємо помилку
+            
+            msg = await query.bot.send_message(chat_id=user_id, text=formatted_message, parse_mode="HTML")
+            new_client_msg_id = msg.message_id
+
+        elif client_msg_id == 0:
+            # Це перший крок (Прийнято) — відправляємо перше повідомлення (теж PUSH 🔔)
+            msg = await query.bot.send_message(chat_id=user_id, text=formatted_message, parse_mode="HTML")
+            new_client_msg_id = msg.message_id
+            
+        else:
+            # Крок "Готується" — просто тихо оновлюємо текст (Беззвучно 🔕)
+            await query.bot.edit_message_text(
+                chat_id=user_id,
+                message_id=client_msg_id,
+                text=formatted_message,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Не зміг оновити/відправити повідомлення клієнту {user_id}: {e}")
+
+    # 3. Генеруємо нову клавіатуру для адміна, зберігаючи новий ID повідомлення
+    new_keyboard = get_admin_order_keyboard(
+        order_number, 
+        user_id, 
+        current_status=status_key, 
+        client_msg_id=new_client_msg_id
+    )
+    
+    # 4. Оновлюємо адмінську картку баристи
+    old_text = query.message.html_text
+    new_text = re.sub(r"🔔 <b>Статус:</b>.*", f"🔔 <b>Статус:</b> {status_name}", old_text)
+    
+    await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)
+    await query.answer(f"Статус змінено на {status_name}.")
