@@ -2,6 +2,7 @@
 
 import logging
 import re
+import random
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -85,8 +86,8 @@ def validate_pickup_time(pickup_time: datetime) -> tuple[bool, str]:
 
 
 def generate_order_number() -> str:
-    """Generate order number in format ORD-YYYYMMDDnnnn."""
-    now = datetime.now()
-    date_str = now.strftime("%Y%m%d")
-    time_str = now.strftime("%H%M%S")[:4]
-    return f"ORD-{date_str}{time_str}"
+    """Генерує короткий 4-значний номер замовлення (як у McDonald's).
+    
+    Повертає: рядок з 4 цифр (наприклад, "4812")
+    """
+    return str(random.randint(1000, 9999))
