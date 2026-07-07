@@ -122,3 +122,12 @@ def get_user_cancel_keyboard(order_number: str, admin_msg_id: int) -> InlineKeyb
     builder.button(text="❌ Скасувати замовлення", callback_data=f"usr_cancel:{order_number}:{admin_msg_id}")
     
     return builder.as_markup()
+
+
+def get_new_order_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Bottom reply keyboard shown only after an order is confirmed."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="☕ Ще одне замовлення")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )

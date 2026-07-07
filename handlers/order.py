@@ -21,7 +21,7 @@ from bot.keyboards.inline import (
     get_notes_keyboard,  # Додано нову клавіатуру
     get_time_keyboard,          # ДОДАЛИ
     get_phone_reply_keyboard,
-    get_user_cancel_keyboard
+    get_new_order_reply_keyboard
 )
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
@@ -94,6 +94,38 @@ MESSAGES = {
 }
 
 
+async def _send_menu(
+    message: types.Message,
+    state: FSMContext,
+    session: AsyncSession,
+    remove_reply_keyboard: bool = False,
+) -> None:
+    """Load and show the main menu, then switch FSM to menu selection."""
+    sheets_service = await get_sheets_service()
+    menu = await sheets_service.get_menu()
+
+    if not menu:
+        await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
+        return
+
+    menu_items_text = ""
+    for item in menu:
+        menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
+
+    if remove_reply_keyboard:
+        remove_msg = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+        await remove_msg.delete()
+
+    await message.answer(
+        MESSAGES["menu"].format(menu_items=menu_items_text),
+        parse_mode="HTML",
+        reply_markup=get_menu_keyboard(menu),
+    )
+
+    await state.update_data(menu=menu)
+    await state.set_state(OrderFSM.menu_selection)
+
+
 @router.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle /start command - display menu."""
@@ -107,26 +139,7 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
             last_name=message.from_user.last_name,
         )
 
-        sheets_service = await get_sheets_service()
-        menu = await sheets_service.get_menu()
-
-        if not menu:
-            await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
-            return
-
-        menu_items_text = ""
-        for item in menu:
-            menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
-
-        keyboard = get_menu_keyboard(menu)
-        await message.answer(
-            MESSAGES["menu"].format(menu_items=menu_items_text),
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-
-        await state.update_data(menu=menu)
-        await state.set_state(OrderFSM.menu_selection)
+        await _send_menu(message, state, session)
 
     except Exception as e:
         logger.error(f"Error in start_handler: {e}")
@@ -422,17 +435,16 @@ async def confirm_order_handler(
 
         await query.answer()
         await query.message.edit_reply_markup(reply_markup=None)
-        
-        # Передаємо admin_msg_id у кнопку скасування клієнта
-        safe_admin_msg_id = admin_msg_id if admin_msg_id else 0
-        from bot.keyboards.inline import get_user_cancel_keyboard
-        await query.message.edit_text(
-            success_text, 
+
+        await query.message.delete()
+        await bot.send_message(
+            chat_id=query.message.chat.id,
+            text=success_text,
             parse_mode="HTML",
-            reply_markup=get_user_cancel_keyboard(order_number, safe_admin_msg_id)
+            reply_markup=get_new_order_reply_keyboard(),
         )
 
-        # Clear FSM
+        # Clear FSM and keep the success screen until the user asks for a new order
         await state.clear()
 
         logger.info(f"Order {order_number} created successfully")
@@ -522,6 +534,14 @@ async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
     """Catch clicks on old back buttons from chat history and remove them."""
     await query.answer("⏳ Цей крок вже пройдено", show_alert=False)
     await query.message.edit_reply_markup(reply_markup=None)
+
+
+@router.message(F.text == "☕ Ще одне замовлення")
+async def new_order_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Open the menu again from the bottom reply keyboard."""
+    logger.info(f"User {message.from_user.id} requested a new order")
+
+    await _send_menu(message, state, session, remove_reply_keyboard=True)
 
 
 @router.callback_query(F.data.startswith("usr_cancel:"))
