@@ -209,11 +209,29 @@ class GoogleSheetsService:
             def _update_status() -> bool:
                 """Update status (sync)."""
                 worksheet = spreadsheet.worksheet(ORDERS_SHEET)
-                records = worksheet.get_all_records()
+                rows = worksheet.get_all_values()
+                if not rows:
+                    return False
 
-                for idx, record in enumerate(records, start=2):  # +2 for header + 1-index
-                    if record.get("Order ID") == order_number:
-                        worksheet.update_cell(idx, 8, status)  # Column 8 = Status
+                headers = [header.strip() for header in rows[0]]
+
+                def _find_col(candidates: list[str], default_index: int) -> int:
+                    for candidate in candidates:
+                        if candidate in headers:
+                            return headers.index(candidate) + 1
+                    return default_index
+
+                order_col = _find_col(["Order ID", "Order Number", "Номер замовлення"], 2)
+                status_col = _find_col(["Status", "Статус"], 8)
+
+                for row_index, row in enumerate(rows[1:], start=2):
+                    if len(row) >= order_col and row[order_col - 1] == order_number:
+                        worksheet.update_cell(row_index, status_col, status)
+                        return True
+
+                for row_index, row in enumerate(rows[1:], start=2):
+                    if order_number in row:
+                        worksheet.update_cell(row_index, status_col, status)
                         return True
 
                 return False
@@ -235,11 +253,34 @@ class GoogleSheetsService:
             spreadsheet = await self._get_spreadsheet()
             
             def _get_status():
-                worksheet = spreadsheet.worksheet("Orders") # Вкажи тут назву свого аркуша, якщо вона інша
-                cell = worksheet.find(order_number)
-                if cell:
-                    # Статус лежить у 8-й колонці (H)
-                    return worksheet.cell(cell.row, 8).value
+                worksheet = spreadsheet.worksheet(ORDERS_SHEET)
+                rows = worksheet.get_all_values()
+                if not rows:
+                    return None
+
+                headers = [header.strip() for header in rows[0]]
+
+                def _find_col(candidates: list[str], default_index: int) -> int:
+                    for candidate in candidates:
+                        if candidate in headers:
+                            return headers.index(candidate) + 1
+                    return default_index
+
+                order_col = _find_col(["Order ID", "Order Number", "Номер замовлення"], 2)
+                status_col = _find_col(["Status", "Статус"], 8)
+
+                for row in rows[1:]:
+                    if len(row) >= order_col and row[order_col - 1] == order_number:
+                        if len(row) >= status_col:
+                            return row[status_col - 1]
+                        return None
+
+                for row in rows[1:]:
+                    if order_number in row:
+                        if len(row) >= status_col:
+                            return row[status_col - 1]
+                        return None
+
                 return None
                 
             return await self._retry_operation(_get_status)

@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -20,6 +20,11 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(String(255))
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    favorite_drink_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    favorite_volume_ml: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    favorite_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    favorite_phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    favorite_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now()
     )

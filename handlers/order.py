@@ -21,7 +21,8 @@ from bot.keyboards.inline import (
     get_notes_keyboard,  # Додано нову клавіатуру
     get_time_keyboard,          # ДОДАЛИ
     get_phone_reply_keyboard,
-    get_new_order_reply_keyboard
+    get_new_order_reply_keyboard,
+    FavoriteOrderCallback,
 )
 from bot.services.google_sheets import get_sheets_service
 from bot.services.notifications import AdminNotificationService
@@ -91,13 +92,111 @@ MESSAGES = {
         "⚠️ <b>Меню на даний момент недоступне.</b>\n\n"
         "Спробуй пізніше або зв'яжись з кав'ярнею."
     ),
+    "closed_retry": (
+        "⏸ <b>Кав'ярня зараз зачинена.</b>\n\n"
+        "Кнопка внизу залишилась, тож ти зможеш повернутись до меню, коли ми відкриємось."
+    ),
 }
+
+ACTIVE_STATUS_TERMS = (
+    "готово",
+    "готовий",
+    "done",
+    "completed",
+    "cancel",
+    "canceled",
+    "cancelled",
+    "скасовано",
+    "відмінено",
+    "завершено",
+)
+
+
+def _format_menu_items(menu: list[dict[str, Any]]) -> str:
+    """Render menu items with optional descriptions."""
+    menu_items_text = ""
+    for item in menu:
+        menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
+        description = (item.get("description") or "").strip()
+        if description:
+            menu_items_text += f"<i>{description}</i>\n"
+        menu_items_text += "\n"
+    return menu_items_text.rstrip()
+
+
+def _format_closed_notice(open_time: str, close_time: str) -> str:
+    return (
+        f"⏸ <b>На жаль, кав'ярня зараз зачинена.</b>\n\n"
+        f"Ми приймаємо замовлення лише в робочий час з <code>{open_time}</code> до <code>{close_time}</code>.\n"
+        f"Завітайте до нас пізніше! ☕️"
+    )
+
+
+def _normalize_status_text(status_text: str | None) -> str:
+    return (status_text or "").strip().lower()
+
+
+def _is_active_order_status(status_text: str | None) -> bool:
+    normalized_status = _normalize_status_text(status_text)
+    if not normalized_status:
+        return False
+    return not any(term in normalized_status for term in ACTIVE_STATUS_TERMS)
+
+
+def _normalize_text(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _is_current_favorite(user: Any, drink: dict[str, Any], phone: str, notes: str) -> bool:
+    return (
+        _normalize_text(getattr(user, "favorite_drink_name", None)) == _normalize_text(drink.get("name"))
+        and int(getattr(user, "favorite_volume_ml", 0) or 0) == int(drink.get("volume", 0) or 0)
+        and float(getattr(user, "favorite_price", 0) or 0) == float(drink.get("price", 0) or 0)
+        and _normalize_text(getattr(user, "favorite_phone", None)) == _normalize_text(phone)
+        and _normalize_text(getattr(user, "favorite_notes", None)) == _normalize_text(notes)
+    )
+
+
+def _format_active_order_notice(order_number: str, status_text: str | None) -> str:
+    status_display = status_text or "в роботі"
+    return (
+        f"⏳ <b>У тебе вже є активне замовлення #{order_number}</b>\n\n"
+        f"Поточний статус: <b>{status_display}</b>\n\n"
+        f"Почекай, будь ласка, поки кава буде готова."
+    )
+
+
+async def _get_latest_order_state(session: AsyncSession, telegram_id: int) -> tuple[Any | None, str | None]:
+    recent_orders = await OrderCRUD.get_by_telegram_id_recent(session=session, telegram_id=telegram_id, limit=1)
+    if not recent_orders:
+        return None, None
+
+    order = recent_orders[0]
+    order_status = order.status
+
+    try:
+        sheets_service = await get_sheets_service()
+        sheet_status = await sheets_service.get_order_status(order.order_number)
+        if sheet_status:
+            order_status = sheet_status
+    except Exception as status_err:
+        logger.error(f"Error resolving latest order status: {status_err}")
+
+    return order, order_status
+
+
+async def _get_active_order_state(session: AsyncSession, telegram_id: int) -> tuple[Any | None, str | None]:
+    order, order_status = await _get_latest_order_state(session=session, telegram_id=telegram_id)
+    if order is None or not _is_active_order_status(order_status):
+        return None, None
+    return order, order_status
 
 
 async def _send_menu(
     message: types.Message,
     state: FSMContext,
     session: AsyncSession,
+    favorite_drink_name: str | None = None,
     remove_reply_keyboard: bool = False,
 ) -> None:
     """Load and show the main menu, then switch FSM to menu selection."""
@@ -108,9 +207,7 @@ async def _send_menu(
         await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
         return
 
-    menu_items_text = ""
-    for item in menu:
-        menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
+    menu_items_text = _format_menu_items(menu)
 
     if remove_reply_keyboard:
         remove_msg = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
@@ -119,7 +216,7 @@ async def _send_menu(
     await message.answer(
         MESSAGES["menu"].format(menu_items=menu_items_text),
         parse_mode="HTML",
-        reply_markup=get_menu_keyboard(menu),
+        reply_markup=get_menu_keyboard(menu, favorite_drink_name=favorite_drink_name),
     )
 
     await state.update_data(menu=menu)
@@ -132,14 +229,28 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
     logger.info(f"User {message.from_user.id} started bot")
 
     try:
-        await UserCRUD.get_or_create(
+        user = await UserCRUD.get_or_create(
             session=session,
             telegram_id=message.from_user.id,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
         )
 
-        await _send_menu(message, state, session)
+        active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
+        if active_order is not None:
+            await message.answer(
+                _format_active_order_notice(active_order.order_number, active_status),
+                parse_mode="HTML",
+            )
+            await state.clear()
+            return
+
+        await _send_menu(
+            message,
+            state,
+            session,
+            favorite_drink_name=user.favorite_drink_name,
+        )
 
     except Exception as e:
         logger.error(f"Error in start_handler: {e}")
@@ -154,6 +265,20 @@ async def drink_selected_handler(
     logger.info(f"User {query.from_user.id} selected drink")
 
     try:
+        active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
+        if active_order is not None:
+            await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
+            try:
+                await query.message.edit_text(
+                    _format_active_order_notice(active_order.order_number, active_status),
+                    parse_mode="HTML",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            await state.clear()
+            return
+
         sheets_service = await get_sheets_service()
         config = await sheets_service.get_business_config()
         
@@ -171,13 +296,9 @@ async def drink_selected_handler(
             if not (start_work <= current_time <= end_work):
                 nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
                 nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
-                
-                await query.message.answer(
-                    f"⏸ <b>На жаль, кав'ярня зараз зачинена.</b>\n\n"
-                    f"Ми приймаємо замовлення лише в робочий час з <code>{nice_open}</code> до <code>{nice_close}</code>.\n"
-                    f"Завітайте до нас пізніше! ☕️",
-                    parse_mode="HTML"
-                )
+                closed_notice = _format_closed_notice(nice_open, nice_close)
+
+                await query.message.edit_text(closed_notice, parse_mode="HTML")
                 await query.answer()
                 await state.clear()
                 return
@@ -193,7 +314,7 @@ async def drink_selected_handler(
             return
 
         drink = menu[drink_idx]
-        await state.update_data(selected_drink=drink)
+        await state.update_data(selected_drink=drink, time_prompt_msg_id=query.message.message_id)
         
         await query.answer()
         await query.message.edit_text(
@@ -208,24 +329,32 @@ async def drink_selected_handler(
 
 
 @router.callback_query(OrderFSM.time_input, F.data.startswith("quick_time:"))
-async def quick_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     minutes = int(query.data.split(":")[1])
     pickup_time = datetime.now() + timedelta(minutes=minutes)
     
     await state.update_data(pickup_time=pickup_time)
     await query.message.edit_reply_markup(reply_markup=None)
-    
+
+    data = await state.get_data()
+    if data.get("favorite_flow"):
+        await _show_confirmation(query, state, session=session)
+        await query.answer()
+        return
+
     # Трюк з двома повідомленнями
     await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-    await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
-    
+    phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+    await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
+
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
 
 @router.message(OrderFSM.time_input)
-async def time_input_handler(message: types.Message, state: FSMContext) -> None:
+async def time_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle time input."""
     logger.info(f"User {message.from_user.id} entered time: {message.text}")
+    pickup_time = None
 
     try:
         pickup_time = parse_time_input(message.text)
@@ -273,16 +402,45 @@ async def time_input_handler(message: types.Message, state: FSMContext) -> None:
         except Exception as parse_err:
             logger.error(f"Error parsing table times ({open_time_str}/{close_time_str}): {parse_err}")
 
+        data = await state.get_data()
+        time_prompt_msg_id = data.get("time_prompt_msg_id")
+        if time_prompt_msg_id:
+            try:
+                await message.bot.edit_message_reply_markup(
+                    chat_id=message.chat.id,
+                    message_id=time_prompt_msg_id,
+                    reply_markup=None,
+                )
+            except Exception as edit_err:
+                logger.error(f"Failed to clear time keyboard: {edit_err}")
+
+        favorite_flow = bool(data.get("favorite_flow", False))
         await state.update_data(pickup_time=pickup_time)
-        await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+
+        if favorite_flow:
+            await _show_confirmation(message, state, session=session, source_message_id=time_prompt_msg_id)
+            return
+
+        await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
+        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
+
         await state.set_state(OrderFSM.phone_input)
 
     except Exception as e:
         logger.error(f"Error in time_input_handler: {e}")
+        data = await state.get_data()
+        favorite_flow = bool(data.get("favorite_flow", False))
+        time_prompt_msg_id = data.get("time_prompt_msg_id")
         await state.update_data(pickup_time=pickup_time)
-        
+
+        if favorite_flow:
+            await _show_confirmation(message, state, session=session, source_message_id=time_prompt_msg_id)
+            return
+
         await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-        await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
         
         await state.set_state(OrderFSM.phone_input)
 
@@ -303,11 +461,24 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
         normalized_phone = normalize_phone(phone)
         await state.update_data(phone=normalized_phone)
 
+        data = await state.get_data()
+        phone_prompt_msg_id = data.get("phone_prompt_msg_id")
+        if phone_prompt_msg_id:
+            try:
+                await message.bot.edit_message_reply_markup(
+                    chat_id=message.chat.id,
+                    message_id=phone_prompt_msg_id,
+                    reply_markup=None,
+                )
+            except Exception as edit_err:
+                logger.error(f"Failed to clear phone back button: {edit_err}")
+
         # Непомітно прибираємо нижню клавіатуру
         remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
         await remove_msg.delete()
 
-        await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+        notes_prompt_msg = await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+        await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
         await state.set_state(OrderFSM.notes_input)
 
     except Exception as e:
@@ -317,12 +488,19 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
 # ХЕНДЛЕРИ КОМЕНТАРІВ (НОВІ)
 # ==========================================
 
-async def _show_confirmation(message_or_query: types.Message | types.CallbackQuery, state: FSMContext):
+async def _show_confirmation(
+    message_or_query: types.Message | types.CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    source_message_id: int | None = None,
+):
     """Helper to generate and show the confirmation screen."""
     data = await state.get_data()
     drink = data.get("selected_drink", {})
     pickup_time = data.get("pickup_time")
     notes = data.get("notes", "")
+    favorite_flow = bool(data.get("favorite_flow", False))
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message_or_query.from_user.id)
 
     pickup_time_str = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
     notes_text = f"📝 Побажання: <b>{notes}</b>\n\n" if notes else ""
@@ -335,31 +513,171 @@ async def _show_confirmation(message_or_query: types.Message | types.CallbackQue
         notes_text=notes_text
     )
 
-    keyboard = get_confirmation_keyboard()
+    show_save_favorite = bool(user) and not favorite_flow and not _is_current_favorite(user, drink, data.get("phone", ""), notes)
+    keyboard = get_confirmation_keyboard(
+        show_save_favorite=show_save_favorite,
+        allow_back_to_notes=not favorite_flow,
+    )
 
     if isinstance(message_or_query, types.CallbackQuery):
         await message_or_query.message.edit_text(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
     else:
-        await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+        if source_message_id is not None:
+            await message_or_query.bot.edit_message_text(
+                chat_id=message_or_query.chat.id,
+                message_id=source_message_id,
+                text=confirmation_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
 
     await state.set_state(OrderFSM.confirmation)
 
 @router.message(OrderFSM.notes_input)
-async def notes_input_handler(message: types.Message, state: FSMContext) -> None:
+async def notes_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle text notes input."""
     logger.info(f"User {message.from_user.id} entered notes")
     await state.update_data(notes=message.text.strip())
-    await _show_confirmation(message, state)
+    data = await state.get_data()
+    notes_prompt_msg_id = data.get("notes_prompt_msg_id")
+    await _show_confirmation(message, state, session=session, source_message_id=notes_prompt_msg_id)
 
 @router.callback_query(OrderFSM.notes_input, F.data == "skip_notes")
-async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle skip notes button."""
     logger.info(f"User {query.from_user.id} skipped notes")
     await state.update_data(notes="")
     await query.answer()
-    await _show_confirmation(query, state)
+    await _show_confirmation(query, state, session=session)
 
 # ==========================================
+
+
+@router.callback_query(FavoriteOrderCallback.filter(F.action == "save"))
+async def save_favorite_order_handler(
+    query: types.CallbackQuery,
+    callback_data: FavoriteOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Save the current FSM order as the user's favorite."""
+    logger.info(f"User {query.from_user.id} saved favorite order")
+
+    data = await state.get_data()
+    drink = data.get("selected_drink", {})
+    phone = data.get("phone", "")
+    notes = data.get("notes", "")
+
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
+    if user is None:
+        await query.answer("❌ Користувача не знайдено", show_alert=True)
+        return
+
+    if _is_current_favorite(user, drink, phone, notes):
+        await query.answer("⭐️ Вже збережено як улюблене", show_alert=False)
+        await query.message.edit_reply_markup(
+            reply_markup=get_confirmation_keyboard(
+                show_save_favorite=False,
+                allow_back_to_notes=not bool(data.get("favorite_flow", False)),
+            )
+        )
+        return
+
+    await UserCRUD.save_favorite_order(
+        session=session,
+        telegram_id=query.from_user.id,
+        drink_name=drink.get("name", ""),
+        volume_ml=int(drink.get("volume", 0) or 0),
+        price=float(drink.get("price", 0) or 0),
+        phone=phone,
+        notes=notes,
+    )
+
+    await query.message.edit_reply_markup(
+        reply_markup=get_confirmation_keyboard(
+            show_save_favorite=False,
+            allow_back_to_notes=not bool(data.get("favorite_flow", False)),
+        )
+    )
+    await query.answer("⭐️ Збережено як улюблене", show_alert=False)
+
+
+@router.callback_query(FavoriteOrderCallback.filter(F.action == "open"))
+async def open_favorite_order_handler(
+    query: types.CallbackQuery,
+    callback_data: FavoriteOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Start the favorite-order shortcut from the main menu."""
+    logger.info(f"User {query.from_user.id} opened favorite order")
+
+    active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
+    if active_order is not None:
+        await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
+        try:
+            await query.message.edit_text(
+                _format_active_order_notice(active_order.order_number, active_status),
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        await state.clear()
+        return
+
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
+    if user is None or not user.favorite_drink_name:
+        await query.answer("⭐️ У тебе ще немає збереженого улюбленого замовлення", show_alert=True)
+        return
+
+    sheets_service = await get_sheets_service()
+    config = await sheets_service.get_business_config()
+
+    open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+    close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+
+    current_time = datetime.now().time()
+    try:
+        open_parts = open_time_str.split(":")
+        close_parts = close_time_str.split(":")
+        start_work = time(int(open_parts[0]), int(open_parts[1]))
+        end_work = time(int(close_parts[0]), int(close_parts[1]))
+
+        if not (start_work <= current_time <= end_work):
+            nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
+            nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+            await query.message.edit_text(_format_closed_notice(nice_open, nice_close), parse_mode="HTML")
+            await query.answer()
+            await state.clear()
+            return
+    except Exception as parse_err:
+        logger.error(f"Error parsing table times in favorite open handler: {parse_err}")
+
+    favorite_drink = {
+        "name": user.favorite_drink_name,
+        "volume": user.favorite_volume_ml or 0,
+        "price": user.favorite_price or 0,
+    }
+
+    await state.clear()
+    await state.update_data(
+        selected_drink=favorite_drink,
+        phone=user.favorite_phone or "",
+        notes=user.favorite_notes or "",
+        favorite_flow=True,
+        time_prompt_msg_id=query.message.message_id,
+    )
+
+    await query.message.edit_text(
+        MESSAGES["time_prompt"],
+        parse_mode="HTML",
+        reply_markup=get_time_keyboard(),
+    )
+    await state.set_state(OrderFSM.time_input)
+    await query.answer()
 
 @router.callback_query(OrderFSM.confirmation, F.data == "confirm_order")
 async def confirm_order_handler(
@@ -369,6 +687,20 @@ async def confirm_order_handler(
     logger.info(f"User {query.from_user.id} confirmed order")
 
     try:
+        active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
+        if active_order is not None:
+            await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
+            try:
+                await query.message.edit_text(
+                    _format_active_order_notice(active_order.order_number, active_status),
+                    parse_mode="HTML",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            await state.clear()
+            return
+
         # Get data
         data = await state.get_data()
         drink = data.get("selected_drink", {})
@@ -457,23 +789,31 @@ async def confirm_order_handler(
 # ==========================================
 
 @router.callback_query(StateFilter(OrderFSM.time_input), F.data == "back_to_menu")
-async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext) -> None:
+async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     logger.info(f"User {query.from_user.id} went back to menu")
     data = await state.get_data()
     menu = data.get("menu")
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
+
+    active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
+    if active_order is not None:
+        await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
+        await query.message.edit_text(
+            _format_active_order_notice(active_order.order_number, active_status),
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+        await state.clear()
+        return
 
     if not menu:
         sheets_service = await get_sheets_service()
         menu = await sheets_service.get_menu()
         await state.update_data(menu=menu)
 
-    menu_items_text = ""
-    for item in menu:
-        menu_items_text += f"☕️ <b>{item['name']}</b> {item['volume']}ml — {item['price']} ₴\n"
-
-    keyboard = get_menu_keyboard(menu)
+    keyboard = get_menu_keyboard(menu, favorite_drink_name=getattr(user, "favorite_drink_name", None))
     await query.message.edit_text(
-        MESSAGES["menu"].format(menu_items=menu_items_text),
+        MESSAGES["menu"].format(menu_items=_format_menu_items(menu)),
         parse_mode="HTML",
         reply_markup=keyboard
     )
@@ -508,6 +848,8 @@ async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -
         parse_mode="HTML",
         reply_markup=get_back_to_time_keyboard()
     )
+    phone_prompt_msg = await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
+    await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
 
@@ -541,7 +883,50 @@ async def new_order_handler(message: types.Message, state: FSMContext, session: 
     """Open the menu again from the bottom reply keyboard."""
     logger.info(f"User {message.from_user.id} requested a new order")
 
-    await _send_menu(message, state, session, remove_reply_keyboard=True)
+    active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
+    if active_order is not None:
+        await message.answer(
+            _format_active_order_notice(active_order.order_number, active_status),
+            parse_mode="HTML",
+        )
+        await state.clear()
+        return
+
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
+
+    sheets_service = await get_sheets_service()
+    config = await sheets_service.get_business_config()
+
+    open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+    close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+
+    try:
+        open_parts = open_time_str.split(":")
+        close_parts = close_time_str.split(":")
+        start_work = time(int(open_parts[0]), int(open_parts[1]))
+        end_work = time(int(close_parts[0]), int(close_parts[1]))
+        current_time = datetime.now().time()
+
+        if not (start_work <= current_time <= end_work):
+            nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
+            nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+            await message.answer(
+                _format_closed_notice(nice_open, nice_close),
+                parse_mode="HTML",
+                reply_markup=get_new_order_reply_keyboard(),
+            )
+            await state.clear()
+            return
+    except Exception as parse_err:
+        logger.error(f"Error parsing table times in new_order_handler: {parse_err}")
+
+    await _send_menu(
+        message,
+        state,
+        session,
+        favorite_drink_name=getattr(user, "favorite_drink_name", None),
+        remove_reply_keyboard=True,
+    )
 
 
 @router.callback_query(F.data.startswith("usr_cancel:"))

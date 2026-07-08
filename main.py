@@ -11,6 +11,7 @@ from bot.config import settings
 from bot.database.engine import engine
 from bot.database.models import Base
 from bot.handlers import admin, order
+from bot.middlewares.callback_throttle import CallbackThrottleMiddleware
 from bot.middlewares.db_session import DbSessionMiddleware
 
 # Configure logging
@@ -44,6 +45,7 @@ async def main() -> None:
         dp = Dispatcher(storage=storage)
 
         # Register middleware
+        dp.callback_query.middleware(CallbackThrottleMiddleware())
         dp.message.middleware(DbSessionMiddleware())
         dp.callback_query.middleware(DbSessionMiddleware())
 

@@ -1,10 +1,17 @@
 """Inline and reply keyboards for CoffeeRun bot."""
 
+from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def get_menu_keyboard(menu_items: list[dict]) -> InlineKeyboardMarkup:
+class FavoriteOrderCallback(CallbackData, prefix="fav_order"):
+    """Callback data for favorite-order actions."""
+
+    action: str
+
+
+def get_menu_keyboard(menu_items: list[dict], favorite_drink_name: str | None = None) -> InlineKeyboardMarkup:
     """Build inline keyboard for menu selection.
     
     Args:
@@ -15,6 +22,12 @@ def get_menu_keyboard(menu_items: list[dict]) -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
 
+    if favorite_drink_name:
+        builder.button(
+            text=f"⭐️ Order Favorite ({favorite_drink_name})",
+            callback_data=FavoriteOrderCallback(action="open").pack(),
+        )
+
     for idx, item in enumerate(menu_items):
         button_text = f"☕ {item['name']} {item['volume']}ml — ₴{item['price']}"
         callback_data = f"drink_{idx:03d}"
@@ -24,7 +37,10 @@ def get_menu_keyboard(menu_items: list[dict]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_confirmation_keyboard() -> InlineKeyboardMarkup:
+def get_confirmation_keyboard(
+    show_save_favorite: bool = False,
+    allow_back_to_notes: bool = True,
+) -> InlineKeyboardMarkup:
     """Build inline keyboard for order confirmation.
     
     Returns:
@@ -32,11 +48,27 @@ def get_confirmation_keyboard() -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
 
+    if show_save_favorite:
+        builder.button(
+            text="⭐️ Зберегти як улюблене",
+            callback_data=FavoriteOrderCallback(action="save").pack(),
+        )
+
     builder.button(text="✅ Підтвердити", callback_data="confirm_order")
     builder.button(text="❌ Скасувати", callback_data="cancel_order")
-    builder.button(text="🔙 Назад", callback_data="back_to_notes")
 
-    builder.adjust(2, 1)  # 2 buttons per row
+    if allow_back_to_notes:
+        builder.button(text="🔙 Назад", callback_data="back_to_notes")
+
+    if show_save_favorite and allow_back_to_notes:
+        builder.adjust(1, 2, 1)
+    elif show_save_favorite:
+        builder.adjust(1, 2)
+    elif allow_back_to_notes:
+        builder.adjust(2, 1)
+    else:
+        builder.adjust(2)
+
     return builder.as_markup()
 
 def get_notes_keyboard() -> InlineKeyboardMarkup:
