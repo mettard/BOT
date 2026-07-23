@@ -166,6 +166,19 @@ def _format_active_order_notice(order_number: str, status_text: str | None) -> s
     )
 
 
+async def _clear_warning(event: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    """Видаляє попередження 'Ти вже в процесі', якщо користувач продовжує замовлення."""
+    data = await state.get_data()
+    warning_msg_id = data.get("warning_msg_id")
+    if warning_msg_id:
+        try:
+            chat_id = event.from_user.id
+            await event.bot.delete_message(chat_id=chat_id, message_id=warning_msg_id)
+        except Exception:
+            pass
+        await state.update_data(warning_msg_id=None)
+
+
 async def _get_latest_order_state(session: AsyncSession, telegram_id: int) -> tuple[Any | None, str | None]:
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session=session, telegram_id=telegram_id, limit=1)
     if not recent_orders:
@@ -229,6 +242,35 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
     logger.info(f"User {message.from_user.id} started bot")
 
     try:
+       # ==========================================
+        # 💥 ЗАХИСТ ВІД ДУБЛІВ МЕНЮ ТА ПЕРЕКРИТТЯ КРОКІВ
+        current_state = await state.get_state()
+        if current_state is not None:
+            try:
+                await message.delete()  # Очищаємо чат від зайвих команд
+            except Exception:
+                pass
+                
+            # Видаляємо старе попередження
+            await _clear_warning(message, state)
+            
+            # Якщо ми на кроці телефону — примусово повертаємо нижню кнопку!
+            markup = None
+            if current_state == OrderFSM.phone_input.state:
+                from bot.keyboards.inline import get_phone_reply_keyboard
+                markup = get_phone_reply_keyboard()
+                    
+            # Відправляємо нове попередження вниз чату
+            warning_msg = await message.answer(
+                "⚠️ <b>Ти вже в процесі оформлення замовлення!</b>\n\n"
+                "Продовж його вище або натисни команду /cancel, щоб скасувати його і відкрити меню заново.",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            await state.update_data(warning_msg_id=warning_msg.message_id)
+            return
+        # ==========================================
+
         user = await UserCRUD.get_or_create(
             session=session,
             telegram_id=message.from_user.id,
@@ -263,6 +305,7 @@ async def drink_selected_handler(
 ) -> None:
     """Handle drink selection with instant shop status check."""
     logger.info(f"User {query.from_user.id} selected drink")
+    await _clear_warning(query, state)
 
     try:
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
@@ -330,6 +373,7 @@ async def drink_selected_handler(
 
 @router.callback_query(OrderFSM.time_input, F.data.startswith("quick_time:"))
 async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await _clear_warning(query, state)
     minutes = int(query.data.split(":")[1])
     pickup_time = datetime.now() + timedelta(minutes=minutes)
     
@@ -355,6 +399,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
     """Handle time input."""
     logger.info(f"User {message.from_user.id} entered time: {message.text}")
     pickup_time = None
+    await _clear_warning(message, state)
 
     try:
         pickup_time = parse_time_input(message.text)
@@ -448,6 +493,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
 @router.message(OrderFSM.phone_input)
 async def phone_input_handler(message: types.Message, state: FSMContext) -> None:
     logger.info(f"User {message.from_user.id} entered phone")
+    await _clear_warning(message, state)
     try:
         if message.contact:
             phone = message.contact.phone_number
@@ -483,6 +529,7 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
 
     except Exception as e:
         logger.error(f"Error in phone_input_handler: {e}")
+        await _clear_warning(message, state)
         await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
 # ==========================================
 # ХЕНДЛЕРИ КОМЕНТАРІВ (НОВІ)
@@ -539,6 +586,7 @@ async def _show_confirmation(
 async def notes_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle text notes input."""
     logger.info(f"User {message.from_user.id} entered notes")
+    await _clear_warning(message, state)
     await state.update_data(notes=message.text.strip())
     data = await state.get_data()
     notes_prompt_msg_id = data.get("notes_prompt_msg_id")
@@ -550,6 +598,7 @@ async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext, sess
     logger.info(f"User {query.from_user.id} skipped notes")
     await state.update_data(notes="")
     await query.answer()
+    await _clear_warning(query, state)
     await _show_confirmation(query, state, session=session)
 
 # ==========================================
@@ -791,6 +840,7 @@ async def confirm_order_handler(
 @router.callback_query(StateFilter(OrderFSM.time_input), F.data == "back_to_menu")
 async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     logger.info(f"User {query.from_user.id} went back to menu")
+    await _clear_warning(query, state)
     data = await state.get_data()
     menu = data.get("menu")
     user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
@@ -824,7 +874,7 @@ async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext, se
 @router.callback_query(StateFilter(OrderFSM.phone_input), F.data == "back_to_time")
 async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) -> None:
     logger.info(f"User {query.from_user.id} went back to time input")
-    
+    await _clear_warning(query, state)
     # Непомітно прибираємо нижню клавіатуру
     remove_msg = await query.message.answer("🔄", reply_markup=ReplyKeyboardRemove())
     await remove_msg.delete()
@@ -843,6 +893,7 @@ async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) ->
 async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -> None:
     """Go back to phone input from notes."""
     logger.info(f"User {query.from_user.id} went back to phone input")
+    await _clear_warning(query, state)
     await query.message.edit_text(
         MESSAGES["phone_prompt"],
         parse_mode="HTML",
@@ -858,6 +909,7 @@ async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -
 async def back_to_notes_handler(query: types.CallbackQuery, state: FSMContext) -> None:
     """Go back to notes input from confirmation."""
     logger.info(f"User {query.from_user.id} went back to notes input")
+    await _clear_warning(query, state)
     await query.message.edit_text(
         MESSAGES["notes_prompt"],
         parse_mode="HTML",
@@ -882,6 +934,35 @@ async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
 async def new_order_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Open the menu again from the bottom reply keyboard."""
     logger.info(f"User {message.from_user.id} requested a new order")
+
+    # ==========================================
+    # 💥 ЗАХИСТ ВІД ДУБЛІВ МЕНЮ ТА ПЕРЕКРИТТЯ КРОКІВ
+    current_state = await state.get_state()
+    if current_state is not None:
+        try:
+            await message.delete()  # Очищаємо чат від зайвих команд
+        except Exception:
+            pass
+            
+        # Видаляємо старе попередження
+        await _clear_warning(message, state)
+        
+        # Якщо ми на кроці телефону — примусово повертаємо нижню кнопку!
+        markup = None
+        if current_state == OrderFSM.phone_input.state:
+            from bot.keyboards.inline import get_phone_reply_keyboard
+            markup = get_phone_reply_keyboard()
+                
+        # Відправляємо нове попередження вниз чату
+        warning_msg = await message.answer(
+            "⚠️ <b>Ти вже в процесі оформлення замовлення!</b>\n\n"
+            "Продовж його вище або натисни команду /cancel, щоб скасувати його і відкрити меню заново.",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        await state.update_data(warning_msg_id=warning_msg.message_id)
+        return
+        # ==========================================
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
     if active_order is not None:
@@ -995,6 +1076,7 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
     logger.info(f"User cancelled order flow")
 
     try:
+        await _clear_warning(message_or_query, state)
         await state.clear()
         if isinstance(message_or_query, types.CallbackQuery):
             query = message_or_query
