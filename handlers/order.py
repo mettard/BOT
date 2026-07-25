@@ -46,7 +46,7 @@ MESSAGES = {
         "{menu_items}"
     ),
     "time_prompt": (
-        "⏰ <b>Коли ти забираш замовлення?</b>\n\n"
+        "⏰ <b>Коли ти забиреш замовлення?</b>\n\n"
         "Введи час на зразок: <code>10 хв</code> або <code>15:30</code>"
     ),
     "phone_prompt": (
@@ -64,7 +64,7 @@ MESSAGES = {
         "💰 Ціна: <b>₴{price}</b>\n"
         "⏰ Час забору: <b>{pickup_time}</b>\n\n"
         "{notes_text}"
-        "Се правильно? Натисни <b>Підтвердити</b>"
+        "Усе правильно? Натисни <b>Підтвердити</b>"
     ),
     "success": (
         "✅ <b>Замовлення підтверджено!</b>\n\n"
@@ -394,7 +394,7 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
 
-@router.message(OrderFSM.time_input)
+@router.message(OrderFSM.time_input, F.text)
 async def time_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle time input."""
     logger.info(f"User {message.from_user.id} entered time: {message.text}")
@@ -490,7 +490,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
         await state.set_state(OrderFSM.phone_input)
 
 
-@router.message(OrderFSM.phone_input)
+@router.message(OrderFSM.phone_input, F.text | F.contact)
 async def phone_input_handler(message: types.Message, state: FSMContext) -> None:
     logger.info(f"User {message.from_user.id} entered phone")
     await _clear_warning(message, state)
@@ -582,7 +582,7 @@ async def _show_confirmation(
 
     await state.set_state(OrderFSM.confirmation)
 
-@router.message(OrderFSM.notes_input)
+@router.message(OrderFSM.notes_input, F.text)
 async def notes_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle text notes input."""
     logger.info(f"User {message.from_user.id} entered notes")
@@ -591,6 +591,24 @@ async def notes_input_handler(message: types.Message, state: FSMContext, session
     data = await state.get_data()
     notes_prompt_msg_id = data.get("notes_prompt_msg_id")
     await _show_confirmation(message, state, session=session, source_message_id=notes_prompt_msg_id)
+
+@router.message(StateFilter(OrderFSM.time_input, OrderFSM.phone_input, OrderFSM.notes_input))
+async def wrong_content_fsm_handler(message: types.Message) -> None:
+    """Ловить стікери, фото, відео під час FSM і видаляє їх."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+        
+    warning = await message.answer("⚠️ <b>Будь ласка, надішли звичайний текст або використай кнопки!</b>", parse_mode="HTML")
+    
+    # Видаляємо це попередження через 3 секунди, щоб не засмічувати чат
+    import asyncio
+    await asyncio.sleep(3)
+    try:
+        await warning.delete()
+    except Exception:
+        pass
 
 @router.callback_query(OrderFSM.notes_input, F.data == "skip_notes")
 async def skip_notes_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -1205,3 +1223,19 @@ async def admin_status_handler(query: types.CallbackQuery) -> None:
     
     await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)
     await query.answer(f"Статус змінено на {status_name}.")
+
+
+# ==========================================
+# ГЛОБАЛЬНИЙ СМІТТЄЗБІРНИК
+# ==========================================
+@router.message()
+async def global_trash_catcher(message: types.Message) -> None:
+    """
+    Ця функція стоїть у самому кінці. Вона ловить ВСЕ, 
+    що не спіймали інші хендлери (випадковий текст, стікери поза замовленням).
+    Ми просто тихо це видаляємо.
+    """
+    try:
+        await message.delete()
+    except Exception:
+        pass
