@@ -941,12 +941,6 @@ async def back_to_notes_handler(query: types.CallbackQuery, state: FSMContext) -
 # ЧИСТИЛЬНИК СТАРИХ КНОПОК
 # ==========================================
 
-@router.callback_query(F.data.in_(["back_to_menu", "back_to_time", "back_to_phone", "back_to_notes"]))
-async def outdated_back_buttons_handler(query: types.CallbackQuery) -> None:
-    """Catch clicks on old back buttons from chat history and remove them."""
-    await query.answer("⏳ Цей крок вже пройдено", show_alert=False)
-    await query.message.edit_reply_markup(reply_markup=None)
-
 
 @router.message(F.text == "☕ Ще одне замовлення")
 async def new_order_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
@@ -1239,3 +1233,30 @@ async def global_trash_catcher(message: types.Message) -> None:
         await message.delete()
     except Exception:
         pass
+
+    # ==========================================
+# ГЛОБАЛЬНИЙ ПЕРЕХОПЛЮВАЧ "МЕРТВИХ" КНОПОК
+# ==========================================
+@router.callback_query()
+async def global_dead_callback_catcher(query: types.CallbackQuery, state: FSMContext) -> None:
+    """
+    Ця функція стоїть у самому кінці. Вона ловить ВСІ кліки по інлайн-кнопках, 
+    які не спрацювали в інших хендлерах (через рестарт бота або стару історію чату).
+    """
+    try:
+        # Виводимо спливаюче вікно
+        await query.answer("🔄 Сесія оновилася. Почнімо спочатку!", show_alert=True)
+        # Знищуємо цю мертву клавіатуру
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+        
+    # Даємо клієнту чітку інструкцію, що робити далі (команда /start буде клікабельною)
+    await query.message.answer(
+        "🔌 <b>Сесія застаріла (можливо, бот щойно оновлювався).</b>\n\n"
+        "Щоб зробити нове замовлення, просто натисни /start ☕️",
+        parse_mode="HTML"
+    )
+    
+    # Про всяк випадок очищаємо будь-які залишки стейту
+    await state.clear()

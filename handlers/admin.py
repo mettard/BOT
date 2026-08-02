@@ -47,7 +47,7 @@ async def admin_acknowledge_handler(
             message_id=query.message.message_id,
         )
 
-        # 💥 СПОВІЩЕННЯ КЛІЄНТУ (Додали цей крок)
+        # Сповіщення клієнту про прийняття
         try:
             await bot.send_message(
                 chat_id=order.telegram_id,
@@ -97,7 +97,8 @@ async def admin_cancel_handler(query: types.CallbackQuery, session: AsyncSession
             message_id=query.message.message_id,
         )
 
-        # 💥 СПОВІЩЕННЯ КЛІЄНТУ ПРО СКАСУВАННЯ (Додали цей крок)
+        # Сповіщення клієнту про скасування
+
         try:
             await bot.send_message(
                 chat_id=order.telegram_id,

@@ -4,6 +4,7 @@ import logging
 import re
 import random
 from datetime import datetime, timedelta
+from bot.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,10 @@ def parse_time_input(time_str: str) -> datetime | None:
     if absolute_match:
         hour, minute = int(absolute_match.group(1)), int(absolute_match.group(2))
         now = datetime.now()
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        try:
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except ValueError:
+            return None
 
         # If time is in the past today, assume tomorrow
         if target <= now:
@@ -69,6 +73,7 @@ def validate_pickup_time(pickup_time: datetime) -> tuple[bool, str]:
     
     Checks:
     - Must be in future
+    - Must be within cafe hours (09:00-21:00)
     - Must be within 12 hours ahead
     """
     now = datetime.now()
@@ -76,6 +81,16 @@ def validate_pickup_time(pickup_time: datetime) -> tuple[bool, str]:
     # Check if in past
     if pickup_time <= now:
         return False, "MSG_103"  # Time in past
+
+    # Check cafe hours
+    try:
+        open_time = datetime.strptime(settings.cafe_open_time, "%H:%M").time()
+        close_time = datetime.strptime(settings.cafe_close_time, "%H:%M").time()
+
+        if not (open_time <= pickup_time.time() < close_time):
+            return False, "MSG_104"  # Outside hours
+    except Exception as e:
+        logger.error(f"Error parsing cafe hours in validate_pickup_time: {e}")
 
     # Check advance limit (жорстко ставимо 12 годин замість глючного settings)
     max_future = now + timedelta(hours=12)
