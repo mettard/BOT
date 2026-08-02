@@ -163,3 +163,23 @@ def get_new_order_reply_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=False,
     )
+
+
+def get_admin_stop_orders_reply_keyboard(is_paused: bool = False) -> ReplyKeyboardMarkup:
+    """Bottom reply keyboard for admin to toggle stop-orders mode."""
+    button_text = "▶️ Відновити прийом" if is_paused else "🛑 Стоп-прийом"
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=button_text)]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def get_view_menu_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Bottom reply keyboard shown when cafe reopens."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="☕ Переглянути меню")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+

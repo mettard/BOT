@@ -60,3 +60,29 @@ class Order(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
     )
+
+
+class SystemSetting(Base):
+    """Key-value system configuration model."""
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
+class PausedWaitlist(Base):
+    """Waitlist of users who attempted to order during stop-orders mode."""
+    __tablename__ = "paused_waitlist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+

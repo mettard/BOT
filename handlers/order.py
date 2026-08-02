@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.types import ReplyKeyboardRemove
 from datetime import timedelta
 
-from bot.database.crud import OrderCRUD, UserCRUD
+from bot.database.crud import OrderCRUD, SystemSettingCRUD, UserCRUD, WaitlistCRUD
 from bot.keyboards.inline import (
     get_confirmation_keyboard, 
     get_menu_keyboard, 
@@ -95,6 +95,11 @@ MESSAGES = {
     "closed_retry": (
         "⏸ <b>Кав'ярня зараз зачинена.</b>\n\n"
         "Кнопка внизу залишилась, тож ти зможеш повернутись до меню, коли ми відкриємось."
+    ),
+    "orders_paused": (
+        "⏸ <b>Прийом онлайн-замовлень тимчасово призупинено кав'ярнею.</b>\n\n"
+        "Бариста розбирається з поточними замовленнями або оновлює інгредієнти.\n\n"
+        "🔔 <b>Ми одразу сповістимо вас сюди, як тільки відновимо прийом!</b> ☕"
     ),
 }
 
@@ -213,6 +218,12 @@ async def _send_menu(
     remove_reply_keyboard: bool = False,
 ) -> None:
     """Load and show the main menu, then switch FSM to menu selection."""
+    if await SystemSettingCRUD.is_orders_paused(session):
+        await WaitlistCRUD.add_to_waitlist(session, message.from_user.id)
+        await message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+        await state.clear()
+        return
+
     sheets_service = await get_sheets_service()
     menu = await sheets_service.get_menu()
 
@@ -308,6 +319,17 @@ async def drink_selected_handler(
     await _clear_warning(query, state)
 
     try:
+        if await SystemSettingCRUD.is_orders_paused(session):
+            await WaitlistCRUD.add_to_waitlist(session, query.from_user.id)
+            await query.answer()
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+            await state.clear()
+            return
+
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
         if active_order is not None:
             await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
@@ -341,8 +363,12 @@ async def drink_selected_handler(
                 nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
                 closed_notice = _format_closed_notice(nice_open, nice_close)
 
-                await query.message.edit_text(closed_notice, parse_mode="HTML")
                 await query.answer()
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await query.message.answer(closed_notice, parse_mode="HTML")
                 await state.clear()
                 return
         except Exception as parse_err:
@@ -681,6 +707,17 @@ async def open_favorite_order_handler(
     """Start the favorite-order shortcut from the main menu."""
     logger.info(f"User {query.from_user.id} opened favorite order")
 
+    if await SystemSettingCRUD.is_orders_paused(session):
+        await WaitlistCRUD.add_to_waitlist(session, query.from_user.id)
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+        await state.clear()
+        return
+
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
     if active_order is not None:
         await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
@@ -754,6 +791,17 @@ async def confirm_order_handler(
     logger.info(f"User {query.from_user.id} confirmed order")
 
     try:
+        if await SystemSettingCRUD.is_orders_paused(session):
+            await WaitlistCRUD.add_to_waitlist(session, query.from_user.id)
+            await query.answer()
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+            await state.clear()
+            return
+
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
         if active_order is not None:
             await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
@@ -942,7 +990,7 @@ async def back_to_notes_handler(query: types.CallbackQuery, state: FSMContext) -
 # ==========================================
 
 
-@router.message(F.text == "☕ Ще одне замовлення")
+@router.message(F.text.in_({"☕ Ще одне замовлення", "☕ Переглянути меню", "☕️ Переглянути меню"}))
 async def new_order_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Open the menu again from the bottom reply keyboard."""
     logger.info(f"User {message.from_user.id} requested a new order")

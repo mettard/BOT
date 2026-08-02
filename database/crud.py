@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Order, User
+from bot.database.models import Order, PausedWaitlist, SystemSetting, User
 
 
 class UserCRUD:
@@ -155,4 +155,68 @@ class OrderCRUD:
         )
         result = await session.execute(stmt)
         return result.scalars().all()
+
+
+class SystemSettingCRUD:
+    """CRUD operations for system settings."""
+
+    @staticmethod
+    async def is_orders_paused(session: AsyncSession) -> bool:
+        """Check if orders are currently paused."""
+        stmt = select(SystemSetting).where(SystemSetting.key == "orders_paused")
+        result = await session.execute(stmt)
+        setting = result.scalar_one_or_none()
+        if setting is None:
+            return False
+        return setting.value.lower() == "true"
+
+    @staticmethod
+    async def set_orders_paused(session: AsyncSession, paused: bool) -> None:
+        """Set whether orders are paused."""
+        stmt = select(SystemSetting).where(SystemSetting.key == "orders_paused")
+        result = await session.execute(stmt)
+        setting = result.scalar_one_or_none()
+        val_str = "true" if paused else "false"
+
+        if setting is None:
+            setting = SystemSetting(key="orders_paused", value=val_str)
+            session.add(setting)
+        else:
+            setting.value = val_str
+            setting.updated_at = datetime.now(timezone.utc)
+
+        await session.commit()
+
+
+class WaitlistCRUD:
+    """CRUD operations for paused order waitlist."""
+
+    @staticmethod
+    async def add_to_waitlist(session: AsyncSession, telegram_id: int) -> None:
+        """Add user to waitlist if not already present."""
+        stmt = select(PausedWaitlist).where(PausedWaitlist.telegram_id == telegram_id)
+        result = await session.execute(stmt)
+        entry = result.scalar_one_or_none()
+
+        if entry is None:
+            entry = PausedWaitlist(telegram_id=telegram_id)
+            session.add(entry)
+            await session.commit()
+
+    @staticmethod
+    async def pop_waitlist_users(session: AsyncSession) -> list[int]:
+        """Fetch all waiting telegram IDs and clear the waitlist."""
+        stmt = select(PausedWaitlist)
+        result = await session.execute(stmt)
+        entries = result.scalars().all()
+
+        telegram_ids = [e.telegram_id for e in entries]
+
+        if entries:
+            for entry in entries:
+                await session.delete(entry)
+            await session.commit()
+
+        return telegram_ids
+
 

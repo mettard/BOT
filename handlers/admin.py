@@ -114,3 +114,92 @@ async def admin_cancel_handler(query: types.CallbackQuery, session: AsyncSession
     except Exception as e:
         logger.error(f"Error in admin_cancel_handler: {e}")
         await query.answer("❌ Помилка при обробці замовлення", show_alert=True)
+
+
+from aiogram.filters import Command
+from bot.config import settings
+from bot.database.crud import SystemSettingCRUD, WaitlistCRUD
+from bot.keyboards.inline import get_admin_stop_orders_reply_keyboard
+
+
+def is_admin(user_id: int, chat_id: int) -> bool:
+    """Check if message is from an admin user or admin chat."""
+    return user_id == settings.admin_chat_id or chat_id == settings.admin_chat_id
+
+
+@router.message(Command("admin"))
+async def admin_panel_handler(message: types.Message, session: AsyncSession) -> None:
+    """Show admin panel keyboard."""
+    if not is_admin(message.from_user.id, message.chat.id):
+        return
+
+    is_paused = await SystemSettingCRUD.is_orders_paused(session)
+    status_text = "⏸ <b>Прийом замовлень призупинено</b>" if is_paused else "✅ <b>Прийом замовлень активний</b>"
+    keyboard = get_admin_stop_orders_reply_keyboard(is_paused=is_paused)
+
+    await message.answer(
+        f"⚙️ <b>Панель адміністратора CoffeeRun</b>\n\nПоточний стан: {status_text}",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+@router.message(F.text == "🛑 Стоп-прийом")
+@router.message(Command("stop_orders"))
+async def stop_orders_handler(message: types.Message, session: AsyncSession) -> None:
+    """Pause order intake."""
+    if not is_admin(message.from_user.id, message.chat.id):
+        return
+
+    await SystemSettingCRUD.set_orders_paused(session, paused=True)
+    keyboard = get_admin_stop_orders_reply_keyboard(is_paused=True)
+
+    await message.answer(
+        "🛑 <b>Прийом замовлень призупинено (Стоп-Прийом активовано).</b>\n\n"
+        "Клієнти, які намагатимуться зробити замовлення, будуть додані до списку очікування і отримають сповіщення при відновленні.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    logger.info(f"Admin {message.from_user.id} enabled stop-orders mode.")
+
+
+@router.message(F.text == "▶️ Відновити прийом")
+@router.message(Command("start_orders"))
+async def resume_orders_handler(message: types.Message, session: AsyncSession) -> None:
+    """Resume order intake and notify waiting clients."""
+    if not is_admin(message.from_user.id, message.chat.id):
+        return
+
+    await SystemSettingCRUD.set_orders_paused(session, paused=False)
+    keyboard = get_admin_stop_orders_reply_keyboard(is_paused=False)
+
+    # Fetch waiting clients
+    waiting_users = await WaitlistCRUD.pop_waitlist_users(session)
+
+    # Send notifications to waiting clients
+    notified_count = 0
+    from aiogram import Bot
+    from bot.keyboards.inline import get_view_menu_reply_keyboard
+
+    bot = Bot(token=settings.bot_token)
+    client_keyboard = get_view_menu_reply_keyboard()
+
+    for user_id in waiting_users:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text="☕️ <b>Кав'ярня знову приймає замовлення!</b>\n\nЗапрошуємо обрати свій улюблений напій. Натисніть кнопку внизу! 🎉",
+                parse_mode="HTML",
+                reply_markup=client_keyboard,
+            )
+            notified_count += 1
+        except Exception as e:
+            logger.error(f"Could not notify waiting user {user_id}: {e}")
+
+    await message.answer(
+        f"▶️ <b>Прийом замовлень відновлено!</b>\n\n"
+        f"Сповіщено очікуючих клієнтів: <b>{notified_count}</b>.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    logger.info(f"Admin {message.from_user.id} resumed orders. Notified {notified_count} users.")
