@@ -62,6 +62,7 @@ async def main() -> None:
         dp = Dispatcher(storage=storage)
 
         # Register middleware
+        dp.message.middleware(CallbackThrottleMiddleware(interval_seconds=1.0))
         dp.callback_query.middleware(CallbackThrottleMiddleware())
         dp.message.middleware(DbSessionMiddleware())
         dp.callback_query.middleware(DbSessionMiddleware())

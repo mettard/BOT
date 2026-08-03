@@ -283,6 +283,9 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
             return
         # ==========================================
 
+        # Одразу фіксуємо стан FSM, щоб заблокувати будь-які паралельні дублі /start
+        await state.set_state(OrderFSM.menu_selection)
+
         user = await UserCRUD.get_or_create(
             session=session,
             telegram_id=message.from_user.id,
