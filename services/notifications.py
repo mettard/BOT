@@ -144,3 +144,52 @@ class AdminNotificationService:
         except Exception as e:
             logger.error(f"Error sending cancellation: {e}")
             return False
+
+    async def notify_sheets_error(self, order_number: str) -> None:
+        """Send notification about Google Sheets sync error."""
+        try:
+            await self.bot.send_message(
+                chat_id=self.admin_chat_id,
+                text=f"⚠️ <b>Помилка синхронізації з Таблицями!</b>\n\nНе вдалося оновити статус замовлення <b>#{order_number}</b> у Google Таблиці.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send sheets error notification: {e}")
+
+    async def notify_client_unreachable(self, order_number: str, phone: str, action_description: str) -> None:
+        """Send notification when client cannot be messaged via Telegram."""
+        try:
+            await self.bot.send_message(
+                chat_id=self.admin_chat_id,
+                text=(
+                    f"⚠️ <b>Клієнт недоступний!</b>\n\n"
+                    f"Замовлення: <b>#{order_number}</b>\n"
+                    f"Дія: <i>{action_description}</i>\n"
+                    f"Зателефонуйте клієнту: <code>{phone}</code>"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send client unreachable notification: {e}")
+
+    async def notify_menu_load_error(self) -> None:
+        """Send notification when Google Sheets menu fails to load."""
+        try:
+            await self.bot.send_message(
+                chat_id=self.admin_chat_id,
+                text="⚠️ <b>Помилка зчитування Меню!</b>\n\nНе вдалося зчитати позиції меню з Google Таблиці.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send menu load error notification: {e}")
+
+    async def notify_db_error(self, order_number: str) -> None:
+        """Send notification when database query fails."""
+        try:
+            await self.bot.send_message(
+                chat_id=self.admin_chat_id,
+                text=f"⚠️ <b>Помилка Бази Даних!</b>\n\nНе вдалося зберегти/обробити замовлення <b>#{order_number}</b> у локальній БД.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send DB error notification: {e}")

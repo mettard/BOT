@@ -22,6 +22,7 @@ from bot.keyboards.inline import (
     get_time_keyboard,          # ДОДАЛИ
     get_phone_reply_keyboard,
     get_new_order_reply_keyboard,
+    get_view_menu_reply_keyboard,
     FavoriteOrderCallback,
 )
 from bot.services.google_sheets import get_sheets_service
@@ -412,7 +413,17 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
         await query.answer()
         return
 
-    # Трюк з двома повідомленнями
+    # Перевірка наявності телефону у БД (Автопропуск)
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
+    if user and user.phone:
+        await state.update_data(phone=user.phone)
+        notes_prompt_msg = await query.message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+        await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
+        await state.set_state(OrderFSM.notes_input)
+        await query.answer()
+        return
+
+    # Якщо телефону немає — запитуємо
     await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
     phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
     await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
@@ -492,6 +503,15 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
             await _show_confirmation(message, state, session=session, source_message_id=time_prompt_msg_id)
             return
 
+        # Перевірка наявності телефону у БД (Автопропуск)
+        user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
+        if user and user.phone:
+            await state.update_data(phone=user.phone)
+            notes_prompt_msg = await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+            await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
+            await state.set_state(OrderFSM.notes_input)
+            return
+
         await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
         phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
@@ -509,6 +529,15 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
             await _show_confirmation(message, state, session=session, source_message_id=time_prompt_msg_id)
             return
 
+        # Перевірка наявності телефону у БД при помилці
+        user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
+        if user and user.phone:
+            await state.update_data(phone=user.phone)
+            notes_prompt_msg = await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+            await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
+            await state.set_state(OrderFSM.notes_input)
+            return
+
         await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
         phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
@@ -517,7 +546,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
 
 
 @router.message(OrderFSM.phone_input, F.text | F.contact)
-async def phone_input_handler(message: types.Message, state: FSMContext) -> None:
+async def phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     logger.info(f"User {message.from_user.id} entered phone")
     await _clear_warning(message, state)
     try:
@@ -533,6 +562,15 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
         normalized_phone = normalize_phone(phone)
         await state.update_data(phone=normalized_phone)
 
+        # Зберігаємо номер у базі даних при першому введенні
+        await UserCRUD.get_or_create(
+            session=session,
+            telegram_id=message.from_user.id,
+            first_name=message.from_user.first_name,
+            last_name=message.from_user.last_name,
+        )
+        await UserCRUD.update_phone(session=session, telegram_id=message.from_user.id, phone=normalized_phone)
+
         data = await state.get_data()
         phone_prompt_msg_id = data.get("phone_prompt_msg_id")
         if phone_prompt_msg_id:
@@ -545,7 +583,7 @@ async def phone_input_handler(message: types.Message, state: FSMContext) -> None
             except Exception as edit_err:
                 logger.error(f"Failed to clear phone back button: {edit_err}")
 
-        # Непомітно прибираємо нижню клавіатуру
+        # Непомітно прибираємо нижню клавіатуру контакту
         remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
         await remove_msg.delete()
 
@@ -1265,6 +1303,72 @@ async def admin_status_handler(query: types.CallbackQuery) -> None:
     
     await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)
     await query.answer(f"Статус змінено на {status_name}.")
+
+
+# ==========================================
+# ЗМІНА НОМЕРА ТЕЛЕФОНУ ТА МЕНЮ
+# ==========================================
+
+
+@router.message(Command("phone"))
+@router.message(Command("change_phone"))
+async def change_phone_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Обробляє команду /phone для зміни номера телефону."""
+    logger.info(f"User {message.from_user.id} requested phone change")
+    await _clear_warning(message, state)
+    await state.clear()
+    await UserCRUD.get_or_create(
+        session=session,
+        telegram_id=message.from_user.id,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name,
+    )
+    await message.answer("👇 Для зміни номера натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
+    await message.answer(
+        "📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
+        parse_mode="HTML",
+    )
+    await state.set_state(OrderFSM.changing_phone)
+
+
+@router.message(OrderFSM.changing_phone, F.text | F.contact)
+async def changing_phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Приймає новий номер телефону при виклику /phone."""
+    logger.info(f"User {message.from_user.id} changing phone input")
+    try:
+        phone = message.contact.phone_number if message.contact else message.text.strip()
+        if not validate_phone(phone):
+            await message.answer(
+                "⚠️ Некоректний номер телефону. Спробуй ще раз (наприклад: 0501234567) або натисни кнопку внизу.",
+                parse_mode="HTML",
+            )
+            return
+
+        normalized_phone = normalize_phone(phone)
+        await UserCRUD.update_phone(session=session, telegram_id=message.from_user.id, phone=normalized_phone)
+        await state.clear()
+
+        await message.answer(
+            f"✅ <b>Номер телефону успішно змінено на {normalized_phone}!</b>\n\nТепер для всіх твоїх нових замовлень буде використовуватись цей номер.",
+            parse_mode="HTML",
+            reply_markup=get_view_menu_reply_keyboard(),
+        )
+    except Exception as e:
+        logger.error(f"Error in changing_phone_input_handler: {e}")
+        await message.answer("⚠️ Некоректний номер телефону. Спробуй ще раз.", parse_mode="HTML")
+
+
+@router.message(F.text.in_({"☕ Переглянути меню", "☕️ Переглянути меню"}))
+async def view_menu_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Обробляє натискання кнопки '☕ Переглянути меню'."""
+    logger.info(f"User {message.from_user.id} clicked view menu button")
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
+    await _send_menu(
+        message,
+        state,
+        session,
+        favorite_drink_name=getattr(user, "favorite_drink_name", None),
+    )
 
 
 # ==========================================

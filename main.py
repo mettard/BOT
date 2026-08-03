@@ -22,12 +22,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def on_startup() -> None:
-    """Initialize database on startup."""
+from aiogram.types import BotCommand
+
+
+async def set_bot_commands(bot: Bot) -> None:
+    """Register bot commands menu in Telegram."""
+    commands = [
+        BotCommand(command="start", description="☕ Відкрити меню замовлення"),
+        BotCommand(command="phone", description="📱 Змінити номер телефону"),
+        BotCommand(command="cancel", description="❌ Скасувати замовлення"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception as e:
+        logger.error(f"Error setting bot commands: {e}")
+
+
+async def on_startup(bot: Bot) -> None:
+    """Initialize database and commands on startup."""
     logger.info("Creating database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
+    await set_bot_commands(bot)
 
 
 async def on_shutdown() -> None:
@@ -54,7 +71,7 @@ async def main() -> None:
         dp.include_router(order.router)
 
         # Startup
-        await on_startup()
+        await on_startup(bot)
 
         # Start polling
         logger.info("Starting bot polling...")

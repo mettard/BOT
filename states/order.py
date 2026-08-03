@@ -11,6 +11,7 @@ class OrderFSM(StatesGroup):
     phone_input = State()
     notes_input = State()
     confirmation = State()
+    changing_phone = State()
 
 
 class CancelFSM(StatesGroup):
