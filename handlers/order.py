@@ -323,11 +323,25 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 @router.message(Command("cancel"))
 async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, state: FSMContext) -> None:
     """Handle cancellation from any state."""
-    logger.info(f"User cancelled order flow")
+    logger.info("User cancelled order flow")
 
     try:
         await _clear_warning(message_or_query, state)
+        data = await state.get_data()
+
+        # Видаляємо всі попередні повідомлення підказок FSM
+        bot = message_or_query.bot
+        chat_id = message_or_query.message.chat.id if isinstance(message_or_query, types.CallbackQuery) else message_or_query.chat.id
+        for msg_key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
+            msg_id = data.get(msg_key)
+            if msg_id:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+
         await state.clear()
+
         if isinstance(message_or_query, types.CallbackQuery):
             query = message_or_query
             await query.answer()
@@ -335,6 +349,10 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
             await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
         else:
             message = message_or_query
+            try:
+                await message.delete()  # Видаляємо саму команду /cancel від користувача
+            except Exception:
+                pass
             try:
                 remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
                 await remove_msg.delete()
@@ -460,8 +478,7 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
 
     await state.update_data(phone_autoskipped=False)
     # Якщо телефону немає — запитуємо
-    await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-    phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+    phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
     await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
 
     await state.set_state(OrderFSM.phone_input)
@@ -549,8 +566,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
             return
 
         await state.update_data(phone_autoskipped=False)
-        await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
 
         await state.set_state(OrderFSM.phone_input)
@@ -576,8 +592,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
             return
 
         await state.update_data(phone_autoskipped=False)
-        await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
+        phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
         
         await state.set_state(OrderFSM.phone_input)
@@ -1039,22 +1054,30 @@ async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -
     data = await state.get_data()
 
     if data.get("phone_autoskipped"):
+        # Якщо є старе повідомлення часу — видаляємо його, щоб не плодилися дублі у чаті
+        time_prompt_msg_id = data.get("time_prompt_msg_id")
+        if time_prompt_msg_id:
+            try:
+                await query.bot.delete_message(chat_id=query.message.chat.id, message_id=time_prompt_msg_id)
+            except Exception:
+                pass
+
         await query.message.edit_text(
             MESSAGES["time_prompt"],
             parse_mode="HTML",
             reply_markup=get_time_keyboard()
         )
+        await state.update_data(time_prompt_msg_id=query.message.message_id)
         await state.set_state(OrderFSM.time_input)
         await query.answer()
         return
 
-    await query.message.edit_text(
+    phone_prompt_msg = await query.message.edit_text(
         MESSAGES["phone_prompt"],
         parse_mode="HTML",
-        reply_markup=get_back_to_time_keyboard()
+        reply_markup=get_phone_reply_keyboard()
     )
-    phone_prompt_msg = await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
-    await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
+    await state.update_data(phone_prompt_msg_id=query.message.message_id)
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
 
@@ -1349,10 +1372,10 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name,
     )
-    await message.answer("👇 Для зміни номера натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
     await message.answer(
         "📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
         parse_mode="HTML",
+        reply_markup=get_phone_reply_keyboard(),
     )
     await state.set_state(OrderFSM.changing_phone)
 
