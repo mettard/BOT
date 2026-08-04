@@ -314,6 +314,38 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
         await message.answer("⚠️ Технічна помилка. Спробуй ще раз за хвилину.", parse_mode="HTML")
 
 
+@router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
+@router.callback_query(OrderFSM.menu_selection, F.data == "cancel_order")
+@router.callback_query(OrderFSM.time_input, F.data == "cancel_order")
+@router.callback_query(OrderFSM.phone_input, F.data == "cancel_order")
+@router.callback_query(OrderFSM.notes_input, F.data == "cancel_order")
+@router.callback_query(OrderFSM.confirmation, F.data == "cancel_order")
+@router.message(Command("cancel"))
+async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancellation from any state."""
+    logger.info(f"User cancelled order flow")
+
+    try:
+        await _clear_warning(message_or_query, state)
+        await state.clear()
+        if isinstance(message_or_query, types.CallbackQuery):
+            query = message_or_query
+            await query.answer()
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
+        else:
+            message = message_or_query
+            try:
+                remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
+                await remove_msg.delete()
+            except Exception:
+                pass
+            await message.answer(MESSAGES["cancelled"], parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Error in cancel_handler: {e}")
+
+
 @router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
 async def drink_selected_handler(
     query: types.CallbackQuery, state: FSMContext, session: AsyncSession
@@ -419,13 +451,14 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     # Перевірка наявності телефону у БД (Автопропуск)
     user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
     if user and user.phone:
-        await state.update_data(phone=user.phone)
+        await state.update_data(phone=user.phone, phone_autoskipped=True)
         notes_prompt_msg = await query.message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
         await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
         await state.set_state(OrderFSM.notes_input)
         await query.answer()
         return
 
+    await state.update_data(phone_autoskipped=False)
     # Якщо телефону немає — запитуємо
     await query.message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
     phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
@@ -434,7 +467,7 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
 
-@router.message(OrderFSM.time_input, F.text)
+@router.message(OrderFSM.time_input, F.text, ~F.text.startswith("/"))
 async def time_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle time input."""
     logger.info(f"User {message.from_user.id} entered time: {message.text}")
@@ -509,12 +542,13 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
         # Перевірка наявності телефону у БД (Автопропуск)
         user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
         if user and user.phone:
-            await state.update_data(phone=user.phone)
+            await state.update_data(phone=user.phone, phone_autoskipped=True)
             notes_prompt_msg = await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
             await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
             await state.set_state(OrderFSM.notes_input)
             return
 
+        await state.update_data(phone_autoskipped=False)
         await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
         phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
@@ -535,12 +569,13 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
         # Перевірка наявності телефону у БД при помилці
         user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
         if user and user.phone:
-            await state.update_data(phone=user.phone)
+            await state.update_data(phone=user.phone, phone_autoskipped=True)
             notes_prompt_msg = await message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
             await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
             await state.set_state(OrderFSM.notes_input)
             return
 
+        await state.update_data(phone_autoskipped=False)
         await message.answer("👇 Для швидкого замовлення натисніть кнопку внизу:", reply_markup=get_phone_reply_keyboard())
         phone_prompt_msg = await message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_back_to_time_keyboard())
         await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
@@ -548,7 +583,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
         await state.set_state(OrderFSM.phone_input)
 
 
-@router.message(OrderFSM.phone_input, F.text | F.contact)
+@router.message(OrderFSM.phone_input, F.contact | (F.text & ~F.text.startswith("/")))
 async def phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     logger.info(f"User {message.from_user.id} entered phone")
     await _clear_warning(message, state)
@@ -649,7 +684,7 @@ async def _show_confirmation(
 
     await state.set_state(OrderFSM.confirmation)
 
-@router.message(OrderFSM.notes_input, F.text)
+@router.message(OrderFSM.notes_input, F.text, ~F.text.startswith("/"))
 async def notes_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle text notes input."""
     logger.info(f"User {message.from_user.id} entered notes")
@@ -998,9 +1033,21 @@ async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext) ->
 
 @router.callback_query(StateFilter(OrderFSM.notes_input), F.data == "back_to_phone")
 async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -> None:
-    """Go back to phone input from notes."""
-    logger.info(f"User {query.from_user.id} went back to phone input")
+    """Go back from notes (to time input if phone was auto-skipped, or to phone input if manual)."""
+    logger.info(f"User {query.from_user.id} went back from notes input")
     await _clear_warning(query, state)
+    data = await state.get_data()
+
+    if data.get("phone_autoskipped"):
+        await query.message.edit_text(
+            MESSAGES["time_prompt"],
+            parse_mode="HTML",
+            reply_markup=get_time_keyboard()
+        )
+        await state.set_state(OrderFSM.time_input)
+        await query.answer()
+        return
+
     await query.message.edit_text(
         MESSAGES["phone_prompt"],
         parse_mode="HTML",
@@ -1165,31 +1212,7 @@ async def user_cancel_active_order_handler(query: types.CallbackQuery) -> None:
         logging.error(f"Помилка при скасуванні активного замовлення: {e}")
         await query.answer("Виникла технічна помилка. Напишіть баристі.", show_alert=True)
 
-@router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
-@router.callback_query(OrderFSM.menu_selection, F.data == "cancel_order")
-@router.callback_query(OrderFSM.time_input, F.data == "cancel_order")
-@router.callback_query(OrderFSM.phone_input, F.data == "cancel_order")
-@router.callback_query(OrderFSM.notes_input, F.data == "cancel_order")
-@router.callback_query(OrderFSM.confirmation, F.data == "cancel_order")
-@router.message(Command("cancel"))
-async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, state: FSMContext) -> None:
-    """Handle cancellation from any state."""
-    logger.info(f"User cancelled order flow")
 
-    try:
-        await _clear_warning(message_or_query, state)
-        await state.clear()
-        if isinstance(message_or_query, types.CallbackQuery):
-            query = message_or_query
-            await query.answer()
-            await query.message.edit_reply_markup(reply_markup=None)
-            await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
-        else:
-            message = message_or_query
-            await message.answer(MESSAGES["cancelled"], parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error in cancel_handler: {e}")
 
 
 import re
@@ -1334,7 +1357,7 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
     await state.set_state(OrderFSM.changing_phone)
 
 
-@router.message(OrderFSM.changing_phone, F.text | F.contact)
+@router.message(OrderFSM.changing_phone, F.contact | (F.text & ~F.text.startswith("/")))
 async def changing_phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Приймає новий номер телефону при виклику /phone."""
     logger.info(f"User {message.from_user.id} changing phone input")
