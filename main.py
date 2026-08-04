@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import settings
 from bot.database.engine import engine
 from bot.database.models import Base
-from bot.handlers import admin, order
+from bot.handlers import admin, order, history
 from bot.middlewares.callback_throttle import CallbackThrottleMiddleware
 from bot.middlewares.db_session import DbSessionMiddleware
 
@@ -29,6 +29,7 @@ async def set_bot_commands(bot: Bot) -> None:
     """Register bot commands menu in Telegram."""
     commands = [
         BotCommand(command="start", description="☕ Відкрити меню замовлення"),
+        BotCommand(command="orders", description="📜 Історія замовлень"),
         BotCommand(command="phone", description="📱 Змінити номер телефону"),
         BotCommand(command="cancel", description="❌ Скасувати замовлення"),
     ]
@@ -69,6 +70,7 @@ async def main() -> None:
 
         # Register routers (admin first, then order)
         dp.include_router(admin.router)
+        dp.include_router(history.router)
         dp.include_router(order.router)
 
         # Startup

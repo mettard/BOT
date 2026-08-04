@@ -178,11 +178,12 @@ async def resume_orders_handler(message: types.Message, session: AsyncSession) -
 
     # Send notifications to waiting clients
     notified_count = 0
+
     from aiogram import Bot
-    from bot.keyboards.inline import get_view_menu_reply_keyboard
+    from bot.keyboards.inline import get_start_menu_inline_keyboard
 
     bot = Bot(token=settings.bot_token)
-    client_keyboard = get_view_menu_reply_keyboard()
+    client_keyboard = get_start_menu_inline_keyboard()
 
     for user_id in waiting_users:
         try:

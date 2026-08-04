@@ -156,14 +156,12 @@ def get_user_cancel_keyboard(order_number: str, admin_msg_id: int) -> InlineKeyb
     return builder.as_markup()
 
 
-def get_new_order_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Bottom reply keyboard shown only after an order is confirmed."""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="☕ Ще одне замовлення")]],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
-
+def get_new_order_inline_keyboard(receipt_msg_id: int = 0) -> InlineKeyboardMarkup:
+    """Inline keyboard for starting a new order from a status message."""
+    builder = InlineKeyboardBuilder()
+    callback = f"new_order_inline:{receipt_msg_id}" if receipt_msg_id != 0 else "new_order_inline"
+    builder.button(text="☕ Нове замовлення", callback_data=callback)
+    return builder.as_markup()
 
 def get_admin_stop_orders_reply_keyboard(is_paused: bool = False) -> ReplyKeyboardMarkup:
     """Bottom reply keyboard for admin to toggle stop-orders mode."""
@@ -175,11 +173,9 @@ def get_admin_stop_orders_reply_keyboard(is_paused: bool = False) -> ReplyKeyboa
     )
 
 
-def get_view_menu_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Bottom reply keyboard shown when cafe reopens."""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="☕ Переглянути меню")]],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+def get_start_menu_inline_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard for opening the menu."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="☕ Відкрити меню", callback_data="open_menu_inline")
+    return builder.as_markup()
 
