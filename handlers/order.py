@@ -329,39 +329,65 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
         await _clear_warning(message_or_query, state)
         data = await state.get_data()
 
-        # Видаляємо всі попередні повідомлення підказок FSM
+        msg_ids_to_delete = set()
+        for key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
+            val = data.get(key)
+            if val:
+                msg_ids_to_delete.add(val)
+
         bot = message_or_query.bot
-        chat_id = message_or_query.message.chat.id if isinstance(message_or_query, types.CallbackQuery) else message_or_query.chat.id
-        for msg_key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
-            msg_id = data.get(msg_key)
-            if msg_id:
+
+        if isinstance(message_or_query, types.CallbackQuery):
+            query = message_or_query
+            await query.answer()
+            chat_id = query.message.chat.id
+            current_msg_id = query.message.message_id
+
+            for msg_id in msg_ids_to_delete:
+                if msg_id != current_msg_id:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                    except Exception:
+                        pass
+
+            try:
+                await query.message.edit_text(MESSAGES["cancelled"], parse_mode="HTML", reply_markup=None)
+            except Exception:
+                await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
+
+            try:
+                remove_msg = await query.message.answer("⏳", reply_markup=ReplyKeyboardRemove())
+                await remove_msg.delete()
+            except Exception:
+                pass
+        else:
+            message = message_or_query
+            chat_id = message.chat.id
+
+            try:
+                await message.delete()  # Видаляємо саму команду /cancel від користувача
+            except Exception:
+                pass
+
+            for msg_id in msg_ids_to_delete:
                 try:
                     await bot.delete_message(chat_id=chat_id, message_id=msg_id)
                 except Exception:
                     pass
 
-        await state.clear()
-
-        if isinstance(message_or_query, types.CallbackQuery):
-            query = message_or_query
-            await query.answer()
-            await query.message.edit_reply_markup(reply_markup=None)
-            await query.message.answer(MESSAGES["cancelled"], parse_mode="HTML")
-        else:
-            message = message_or_query
-            try:
-                await message.delete()  # Видаляємо саму команду /cancel від користувача
-            except Exception:
-                pass
             try:
                 remove_msg = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
                 await remove_msg.delete()
             except Exception:
                 pass
+
             await message.answer(MESSAGES["cancelled"], parse_mode="HTML")
+
+        await state.clear()
 
     except Exception as e:
         logger.error(f"Error in cancel_handler: {e}")
+        await state.clear()
 
 
 @router.callback_query(OrderFSM.menu_selection, F.data.startswith("drink_"))
@@ -458,7 +484,6 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     pickup_time = datetime.now() + timedelta(minutes=minutes)
     
     await state.update_data(pickup_time=pickup_time)
-    await query.message.edit_reply_markup(reply_markup=None)
 
     data = await state.get_data()
     if data.get("favorite_flow"):
@@ -470,16 +495,15 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=query.from_user.id)
     if user and user.phone:
         await state.update_data(phone=user.phone, phone_autoskipped=True)
-        notes_prompt_msg = await query.message.answer(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
-        await state.update_data(notes_prompt_msg_id=notes_prompt_msg.message_id)
+        await query.message.edit_text(MESSAGES["notes_prompt"], parse_mode="HTML", reply_markup=get_notes_keyboard())
+        await state.update_data(notes_prompt_msg_id=query.message.message_id)
         await state.set_state(OrderFSM.notes_input)
         await query.answer()
         return
 
     await state.update_data(phone_autoskipped=False)
-    # Якщо телефону немає — запитуємо
-    phone_prompt_msg = await query.message.answer(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
-    await state.update_data(phone_prompt_msg_id=phone_prompt_msg.message_id)
+    await query.message.edit_text(MESSAGES["phone_prompt"], parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
+    await state.update_data(phone_prompt_msg_id=query.message.message_id)
 
     await state.set_state(OrderFSM.phone_input)
     await query.answer()
@@ -541,13 +565,12 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
         time_prompt_msg_id = data.get("time_prompt_msg_id")
         if time_prompt_msg_id:
             try:
-                await message.bot.edit_message_reply_markup(
+                await message.bot.delete_message(
                     chat_id=message.chat.id,
                     message_id=time_prompt_msg_id,
-                    reply_markup=None,
                 )
-            except Exception as edit_err:
-                logger.error(f"Failed to clear time keyboard: {edit_err}")
+            except Exception as delete_err:
+                logger.error(f"Failed to delete time keyboard: {delete_err}")
 
         favorite_flow = bool(data.get("favorite_flow", False))
         await state.update_data(pickup_time=pickup_time)
@@ -1054,14 +1077,6 @@ async def back_to_phone_handler(query: types.CallbackQuery, state: FSMContext) -
     data = await state.get_data()
 
     if data.get("phone_autoskipped"):
-        # Якщо є старе повідомлення часу — видаляємо його, щоб не плодилися дублі у чаті
-        time_prompt_msg_id = data.get("time_prompt_msg_id")
-        if time_prompt_msg_id:
-            try:
-                await query.bot.delete_message(chat_id=query.message.chat.id, message_id=time_prompt_msg_id)
-            except Exception:
-                pass
-
         await query.message.edit_text(
             MESSAGES["time_prompt"],
             parse_mode="HTML",
@@ -1441,23 +1456,43 @@ async def global_trash_catcher(message: types.Message) -> None:
 @router.callback_query()
 async def global_dead_callback_catcher(query: types.CallbackQuery, state: FSMContext) -> None:
     """
-    Ця функція стоїть у самому кінці. Вона ловить ВСІ кліки по інлайн-кнопках, 
-    які не спрацювали в інших хендлерах (через рестарт бота або стару історію чату).
+    Ця функція ловить кліки по інлайн-кнопках від застарілих сесій.
+    Видаляє накопичені підказки FSM та виводить чисте сповіщення про застарілу сесію.
     """
     try:
-        # Виводимо спливаюче вікно
-        await query.answer("🔄 Сесія оновилася. Почнімо спочатку!", show_alert=True)
-        # Знищуємо цю мертву клавіатуру
-        await query.message.edit_reply_markup(reply_markup=None)
+        await query.answer()  # Без popup алерта!
     except Exception:
         pass
-        
-    # Даємо клієнту чітку інструкцію, що робити далі (команда /start буде клікабельною)
+
+    try:
+        await _clear_warning(query, state)
+        data = await state.get_data()
+
+        # Видаляємо всі попередні повідомлення підказок FSM
+        for msg_key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
+            msg_id = data.get(msg_key)
+            if msg_id:
+                try:
+                    await query.bot.delete_message(chat_id=query.message.chat.id, message_id=msg_id)
+                except Exception:
+                    pass
+
+        # Видаляємо застаріле повідомлення з кнопками
+        try:
+            await query.message.delete()
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Error cleaning dead callback session: {e}")
+
+    # Даємо клієнту чітку інструкцію, що робити далі
     await query.message.answer(
         "🔌 <b>Сесія застаріла (можливо, бот щойно оновлювався).</b>\n\n"
         "Щоб зробити нове замовлення, просто натисни /start ☕️",
         parse_mode="HTML"
     )
-    
-    # Про всяк випадок очищаємо будь-які залишки стейту
-    await state.clear()
