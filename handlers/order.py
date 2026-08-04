@@ -238,13 +238,13 @@ async def _send_menu(
         remove_msg = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
         await remove_msg.delete()
 
-    await message.answer(
+    menu_msg = await message.answer(
         MESSAGES["menu"].format(menu_items=menu_items_text),
         parse_mode="HTML",
         reply_markup=get_menu_keyboard(menu, favorite_drink_name=favorite_drink_name),
     )
 
-    await state.update_data(menu=menu)
+    await state.update_data(menu=menu, menu_msg_id=menu_msg.message_id)
     await state.set_state(OrderFSM.menu_selection)
 
 
@@ -330,7 +330,7 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
         data = await state.get_data()
 
         msg_ids_to_delete = set()
-        for key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
+        for key in ("menu_msg_id", "time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
             val = data.get(key)
             if val:
                 msg_ids_to_delete.add(val)
@@ -463,7 +463,7 @@ async def drink_selected_handler(
             return
 
         drink = menu[drink_idx]
-        await state.update_data(selected_drink=drink, time_prompt_msg_id=query.message.message_id)
+        await state.update_data(selected_drink=drink, time_prompt_msg_id=query.message.message_id, menu_msg_id=None)
         
         await query.answer()
         await query.message.edit_text(
@@ -1469,7 +1469,7 @@ async def global_dead_callback_catcher(query: types.CallbackQuery, state: FSMCon
         data = await state.get_data()
 
         # Видаляємо всі попередні повідомлення підказок FSM
-        for msg_key in ("time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
+        for msg_key in ("menu_msg_id", "time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id"):
             msg_id = data.get(msg_key)
             if msg_id:
                 try:
