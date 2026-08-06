@@ -47,29 +47,48 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session, telegram_id=user_id, limit=10)
     
     if not recent_orders:
-        await message.answer(
-            "У тебе ще немає історії замовлень ☕️",
-            reply_markup=get_close_history_keyboard()
-        )
-        return
+        history_text = "У тебе ще немає історії замовлень ☕️"
+    else:
+        history_lines = ["📜 <b>Твої останні замовлення:</b>\n"]
+        for order in recent_orders:
+            date_str = order.created_at.strftime("%d.%m.%Y")
+            
+            status_map = {
+                "New": "⏳ Нове",
+                "Прийнято": "🟡 Прийнято",
+                "Готується": "🔥 Готується",
+                "Готово": "✅ Готово",
+                "Скасовано": "❌ Скасовано",
+            }
+            status_emoji = status_map.get(order.status, order.status)
+            
+            history_lines.append(f"📅 {date_str} | ☕ {order.drink_name} | 💵 {order.price:g} грн | {status_emoji}")
 
-    history_lines = ["📜 <b>Твої останні замовлення:</b>\n"]
-    for order in recent_orders:
-        date_str = order.created_at.strftime("%d.%m.%Y")
-        
-        status_map = {
-            "New": "⏳ Нове",
-            "Прийнято": "🟡 Прийнято",
-            "Готується": "🔥 Готується",
-            "Готово": "✅ Готово",
-            "Скасовано": "❌ Скасовано",
-        }
-        status_emoji = status_map.get(order.status, order.status)
-        
-        history_lines.append(f"📅 {date_str} | ☕ {order.drink_name} | 💵 {order.price:g} грн | {status_emoji}")
-
-    history_text = "\n\n".join(history_lines)
+        history_text = "\n\n".join(history_lines)
     
+    data = await state.get_data()
+    current_view = data.get("current_view")
+    
+    target_msg_id = None
+    if current_view == "menu":
+        target_msg_id = data.get("menu_msg_id")
+    elif current_view == "cancel":
+        target_msg_id = data.get("cancel_msg_id")
+        
+    if target_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=target_msg_id,
+                text=history_text,
+                parse_mode="HTML",
+                reply_markup=get_close_history_keyboard()
+            )
+            await state.update_data(saved_view=current_view, history_target_msg_id=target_msg_id)
+            return
+        except Exception:
+            pass
+
     history_msg = await message.answer(
         history_text,
         parse_mode="HTML",
@@ -78,11 +97,36 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     await state.update_data(history_msg_id=history_msg.message_id)
 
 @router.callback_query(F.data == "close_history")
-async def close_history_handler(query: types.CallbackQuery, state: FSMContext) -> None:
-    """Закриває повідомлення з історією."""
+async def close_history_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Відновлює попередній екран замість видалення історії."""
     await query.answer()
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    await state.update_data(history_msg_id=None)
+    
+    data = await state.get_data()
+    saved_view = data.get("saved_view")
+    target_msg_id = data.get("history_target_msg_id")
+    
+    if saved_view and target_msg_id:
+        from bot.handlers.order import start_handler, MESSAGES
+        from bot.keyboards.inline import get_start_menu_inline_keyboard
+        
+        if saved_view == "menu":
+            await start_handler(query.message, state, session, is_callback=True, edit_msg_id=target_msg_id)
+        elif saved_view == "cancel":
+            try:
+                await query.message.bot.edit_message_text(
+                    chat_id=query.message.chat.id,
+                    message_id=target_msg_id,
+                    text=MESSAGES["cancelled"],
+                    parse_mode="HTML",
+                    reply_markup=get_start_menu_inline_keyboard()
+                )
+            except Exception:
+                pass
+        
+        await state.update_data(saved_view=None, history_target_msg_id=None)
+    else:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await state.update_data(history_msg_id=None)

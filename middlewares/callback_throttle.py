@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class CallbackThrottleMiddleware(BaseMiddleware):
     """Suppress repeated interactions (messages/callbacks) from the same user."""
 
-    def __init__(self, interval_seconds: float = 1.5) -> None:
+    def __init__(self, interval_seconds: float = 0.7) -> None:
         self.interval_seconds = interval_seconds
         self._last_seen: dict[int, float] = {}
 
