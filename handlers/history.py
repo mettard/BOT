@@ -72,7 +72,7 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     target_msg_id = None
     if current_view == "menu":
         target_msg_id = data.get("menu_msg_id")
-    elif current_view == "cancel":
+    elif current_view in ("cancel", "nothing_to_cancel"):
         target_msg_id = data.get("cancel_msg_id")
         
     if target_msg_id:
@@ -111,12 +111,13 @@ async def close_history_handler(query: types.CallbackQuery, state: FSMContext, s
         
         if saved_view == "menu":
             await start_handler(query.message, state, session, is_callback=True, edit_msg_id=target_msg_id)
-        elif saved_view == "cancel":
+        elif saved_view in ("cancel", "nothing_to_cancel"):
+            text = MESSAGES["cancelled"] if saved_view == "cancel" else "Скасовувати нічого — у тебе немає активного процесу замовлення."
             try:
                 await query.message.bot.edit_message_text(
                     chat_id=query.message.chat.id,
                     message_id=target_msg_id,
-                    text=MESSAGES["cancelled"],
+                    text=text,
                     parse_mode="HTML",
                     reply_markup=get_start_menu_inline_keyboard()
                 )

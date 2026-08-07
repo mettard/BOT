@@ -434,11 +434,12 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
                 await message_or_query.delete()
             except Exception:
                 pass
-            await message_or_query.answer(
+            msg = await message_or_query.answer(
                 "Скасовувати нічого — у тебе немає активного процесу замовлення.",
                 reply_markup=get_start_menu_inline_keyboard()
             )
             await state.clear()
+            await state.update_data(current_view="nothing_to_cancel", cancel_msg_id=msg.message_id)
             return
 
         text = MESSAGES["cancelled"]
