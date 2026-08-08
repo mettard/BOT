@@ -35,12 +35,16 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     
     if current_state is not None or active_order is not None:
         # Клієнт в процесі замовлення або вже очікує на напій
-        await _clear_warning(message, state)
         warning_msg = await message.answer(
             "⚠️ <b>Закінчи або дочекайся поточного замовлення перед тим, як переглядати історію.</b>",
             parse_mode="HTML"
         )
-        await state.update_data(warning_msg_id=warning_msg.message_id)
+        import asyncio
+        await asyncio.sleep(4)
+        try:
+            await warning_msg.delete()
+        except Exception:
+            pass
         return
 
     # Отримуємо останні замовлення

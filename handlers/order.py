@@ -353,20 +353,18 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
                 except Exception:
                     pass
             
-            # Якщо ми на кроці телефону — примусово повертаємо нижню кнопку!
-            markup = None
-            if current_state == OrderFSM.phone_input.state:
-                from bot.keyboards.inline import get_phone_reply_keyboard
-                markup = get_phone_reply_keyboard()
-                    
-            # Відправляємо нове попередження вниз чату
-            warning_msg = await message.answer(
-                "⚠️ <b>Ти вже в процесі оформлення замовлення!</b>\n\n"
-                "Продовж його вище або натисни команду /cancel, щоб скасувати його і відкрити меню заново.",
-                parse_mode="HTML",
-                reply_markup=markup
-            )
-            await state.update_data(warning_msg_id=warning_msg.message_id)
+            if not is_callback:
+                warning_msg = await message.answer(
+                    "⚠️ <b>Ти вже в процесі оформлення замовлення!</b>\n"
+                    "Продовж його або відправ команду /cancel для скасування.",
+                    parse_mode="HTML"
+                )
+                import asyncio
+                await asyncio.sleep(4)
+                try:
+                    await warning_msg.delete()
+                except Exception:
+                    pass
             return
         # ==========================================
 
@@ -385,10 +383,16 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=user_model_id)
         if active_order is not None:
-            await message.answer(
+            warning_msg = await message.answer(
                 _format_active_order_notice(active_order.order_number, active_status),
                 parse_mode="HTML",
             )
+            import asyncio
+            await asyncio.sleep(4)
+            try:
+                await warning_msg.delete()
+            except Exception:
+                pass
             await state.clear()
             return
 
@@ -608,8 +612,29 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
 
     try:
         pickup_time = parse_time_input(message.text)
+        
+        data = await state.get_data()
+        time_prompt_msg_id = data.get("time_prompt_msg_id")
+        
+        async def _show_time_error(error_text: str):
+            if time_prompt_msg_id:
+                from bot.keyboards.inline import get_time_keyboard
+                try:
+                    await message.bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=time_prompt_msg_id,
+                        text=f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['time_prompt']}",
+                        parse_mode="HTML",
+                        reply_markup=get_time_keyboard()
+                    )
+                except Exception:
+                    pass
+            else:
+                msg = await message.answer(f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['time_prompt']}", parse_mode="HTML")
+                await state.update_data(time_prompt_msg_id=msg.message_id)
+
         if pickup_time is None:
-            await message.answer(MESSAGES["invalid_time"], parse_mode="HTML")
+            await _show_time_error(MESSAGES["invalid_time"])
             return
 
         sheets_service = await get_sheets_service()
@@ -625,7 +650,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
                 "MSG_105": MESSAGES["time_too_far"],
             }.get(error_key, MESSAGES["invalid_time"])
 
-            await message.answer(error_msg, parse_mode="HTML")
+            await _show_time_error(error_msg)
             return
 
         try:
@@ -644,10 +669,7 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
                 nice_open = f"{open_h:02d}:{open_m:02d}"
                 nice_close = f"{close_h:02d}:{close_m:02d}"
                 
-                await message.answer(
-                    MESSAGES["time_outside_hours"].format(open_time=nice_open, close_time=nice_close),
-                    parse_mode="HTML"
-                )
+                await _show_time_error(MESSAGES["time_outside_hours"].format(open_time=nice_open, close_time=nice_close))
                 return
         except Exception as parse_err:
             logger.error(f"Error parsing table times ({open_time_str}/{close_time_str}): {parse_err}")
@@ -744,8 +766,19 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
         else:
             phone = message.text.strip()
 
+        async def _show_phone_error(error_text: str):
+            data = await state.get_data()
+            phone_prompt_msg_id = data.get("phone_prompt_msg_id")
+            if phone_prompt_msg_id:
+                try:
+                    await message.bot.delete_message(chat_id=message.chat.id, message_id=phone_prompt_msg_id)
+                except Exception:
+                    pass
+            msg = await message.answer(f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['phone_prompt']}", parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
+            await state.update_data(phone_prompt_msg_id=msg.message_id)
+
         if not validate_phone(phone):
-            await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
+            await _show_phone_error(MESSAGES["invalid_phone"])
             return
 
         normalized_phone = normalize_phone(phone)
@@ -789,7 +822,7 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
     except Exception as e:
         logger.error(f"Error in phone_input_handler: {e}")
         await _clear_warning(message, state)
-        await message.answer(MESSAGES["invalid_phone"], parse_mode="HTML")
+        pass
 # ==========================================
 # ХЕНДЛЕРИ КОМЕНТАРІВ (НОВІ)
 # ==========================================
@@ -800,15 +833,22 @@ async def _show_confirmation(
     session: AsyncSession,
     source_message_id: int | None = None,
 ):
-    """Helper to generate and show the confirmation screen."""
+    """Показує фінальне підтвердження замовлення."""
     data = await state.get_data()
     drink = data.get("selected_drink", {})
     pickup_time = data.get("pickup_time")
     notes = data.get("notes", "")
     favorite_flow = bool(data.get("favorite_flow", False))
     user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message_or_query.from_user.id)
+    
+    if pickup_time is None:
+        if isinstance(message_or_query, types.CallbackQuery):
+            await message_or_query.answer("⚠️ Час не обрано", show_alert=True)
+        return
+        
+    pickup_time_str = pickup_time.strftime("%d.%m.%Y %H:%M")
 
-    pickup_time_str = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
+    # Якщо пропустили, notes_text буде "Немає"
     notes_text = f"📝 Побажання: <b>{notes}</b>\n\n" if notes else ""
 
     confirmation_text = MESSAGES["confirmation"].format(
@@ -826,18 +866,32 @@ async def _show_confirmation(
     )
 
     if isinstance(message_or_query, types.CallbackQuery):
-        await message_or_query.message.edit_text(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+        try:
+            await message_or_query.message.edit_text(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            try:
+                await message_or_query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            msg = await message_or_query.message.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+            await state.update_data(notes_prompt_msg_id=msg.message_id)
     else:
-        if source_message_id is not None:
-            await message_or_query.bot.edit_message_text(
-                chat_id=message_or_query.chat.id,
-                message_id=source_message_id,
-                text=confirmation_text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
+        if source_message_id:
+            try:
+                await message_or_query.bot.edit_message_text(
+                    chat_id=message_or_query.chat.id,
+                    message_id=source_message_id,
+                    text=confirmation_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                logger.error(f"Failed to edit message in _show_confirmation: {e}")
+                msg = await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+                await state.update_data(notes_prompt_msg_id=msg.message_id)
         else:
-            await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+            msg = await message_or_query.answer(confirmation_text, parse_mode="HTML", reply_markup=keyboard)
+            await state.update_data(notes_prompt_msg_id=msg.message_id)
 
     await state.set_state(OrderFSM.confirmation)
 
@@ -1532,17 +1586,17 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
     # 💥 ЗАХИСТ ВІД ДУБЛІВ ТА ПЕРЕКРИТТЯ КРОКІВ
     current_state = await state.get_state()
     if current_state is not None:
-        markup = None
-        if current_state == OrderFSM.phone_input.state:
-            markup = get_phone_reply_keyboard()
-        
         warning_msg = await message.answer(
             "⚠️ <b>Ти вже в процесі замовлення.</b>\n"
             "Будь ласка, закінчи або скасуй його.",
-            parse_mode="HTML",
-            reply_markup=markup
+            parse_mode="HTML"
         )
-        await state.update_data(warning_msg_id=warning_msg.message_id)
+        import asyncio
+        await asyncio.sleep(4)
+        try:
+            await warning_msg.delete()
+        except Exception:
+            pass
         return
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
@@ -1551,7 +1605,12 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
             _format_active_order_notice(active_order.order_number, active_status),
             parse_mode="HTML",
         )
-        await state.update_data(warning_msg_id=warning_msg.message_id)
+        import asyncio
+        await asyncio.sleep(4)
+        try:
+            await warning_msg.delete()
+        except Exception:
+            pass
         return
 
     await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
