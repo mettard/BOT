@@ -47,6 +47,9 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
             pass
         return
 
+    # Очищаємо попередні меню
+    await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
+
     # Отримуємо останні замовлення
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session, telegram_id=user_id, limit=10)
     

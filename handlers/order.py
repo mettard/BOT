@@ -185,16 +185,16 @@ async def _clear_warning(event: types.Message | types.CallbackQuery, state: FSMC
                 pass
             await state.update_data({msg_key: None})
 
-async def _cleanup_fsm_messages(event: types.Message | types.CallbackQuery, state: FSMContext, remove_reply_keyboard: bool = False) -> None:
+async def _cleanup_fsm_messages(event: types.Message | types.CallbackQuery, state: FSMContext, remove_reply_keyboard: bool = False, exclude_msg_id: int | None = None) -> None:
     """Глобальна функція для очищення старих повідомлень FSM та закриття завислих клавіатур (використовувати при скасуванні/рестарті)."""
     data = await state.get_data()
     chat_id = event.chat.id if isinstance(event, types.Message) else event.message.chat.id
     
     # Збираємо всі ID повідомлень, які залишились від FSM
-    msg_keys = ("menu_msg_id", "time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id", "history_msg_id")
+    msg_keys = ("menu_msg_id", "time_prompt_msg_id", "phone_prompt_msg_id", "notes_prompt_msg_id", "warning_msg_id", "history_msg_id", "cancel_msg_id")
     for msg_key in msg_keys:
         msg_id = data.get(msg_key)
-        if msg_id:
+        if msg_id and msg_id != exclude_msg_id:
             try:
                 await event.bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception:
@@ -395,6 +395,9 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
                 pass
             await state.clear()
             return
+            
+        if not is_callback:
+            await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
 
         await _send_menu(
             message,
@@ -439,14 +442,17 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
             except Exception:
                 pass
             msg = await message_or_query.answer(
-                "Скасовувати нічого — у тебе немає активного процесу замовлення.",
+                "Скасовувати нічого — у тебе немає активного процесу.",
                 reply_markup=get_start_menu_inline_keyboard()
             )
             await state.clear()
             await state.update_data(current_view="nothing_to_cancel", cancel_msg_id=msg.message_id)
             return
 
-        text = MESSAGES["cancelled"]
+        if current_state == OrderFSM.changing_phone.state:
+            text = "✅ <b>Зміну номера телефону скасовано.</b>"
+        else:
+            text = MESSAGES["cancelled"]
         markup = get_start_menu_inline_keyboard()
 
         if isinstance(message_or_query, types.CallbackQuery):
@@ -556,6 +562,7 @@ async def drink_selected_handler(
         drink = menu[drink_idx]
         await state.update_data(selected_drink=drink, time_prompt_msg_id=query.message.message_id, menu_msg_id=None)
         
+        await _cleanup_fsm_messages(query, state, remove_reply_keyboard=False, exclude_msg_id=query.message.message_id)
         await query.answer()
         await query.message.edit_text(
             MESSAGES["time_prompt"], 
@@ -575,6 +582,7 @@ async def quick_time_handler(query: types.CallbackQuery, state: FSMContext, sess
     pickup_time = datetime.now() + timedelta(minutes=minutes)
     
     await state.update_data(pickup_time=pickup_time)
+    await _cleanup_fsm_messages(query, state, remove_reply_keyboard=False, exclude_msg_id=query.message.message_id)
 
     data = await state.get_data()
     if data.get("favorite_flow"):
@@ -761,8 +769,10 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
     logger.info(f"User {message.from_user.id} entered phone")
     await _clear_warning(message, state)
     try:
+        from_contact = False
         if message.contact:
             phone = message.contact.phone_number
+            from_contact = True
         else:
             phone = message.text.strip()
 
@@ -777,7 +787,7 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
             msg = await message.answer(f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['phone_prompt']}", parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
             await state.update_data(phone_prompt_msg_id=msg.message_id)
 
-        if not validate_phone(phone):
+        if not from_contact and not validate_phone(phone):
             await _show_phone_error(MESSAGES["invalid_phone"])
             return
 
@@ -1640,16 +1650,40 @@ async def changing_phone_input_handler(message: types.Message, state: FSMContext
         pass
     logger.info(f"User {message.from_user.id} changing phone input")
     try:
-        phone = message.contact.phone_number if message.contact else message.text.strip()
-        if not validate_phone(phone):
-            await message.answer(
-                "⚠️ Некоректний номер телефону. Спробуй ще раз (наприклад: 0501234567) або натисни кнопку внизу.",
-                parse_mode="HTML",
-            )
+        from_contact = False
+        if message.contact:
+            phone = message.contact.phone_number
+            from_contact = True
+        else:
+            phone = message.text.strip()
+
+        async def _show_phone_error(error_text: str):
+            data = await state.get_data()
+            phone_prompt_msg_id = data.get("phone_prompt_msg_id")
+            if phone_prompt_msg_id:
+                try:
+                    await message.bot.delete_message(chat_id=message.chat.id, message_id=phone_prompt_msg_id)
+                except Exception:
+                    pass
+            msg = await message.answer(f"⚠️ <b>{error_text}</b>\n\n📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:", parse_mode="HTML", reply_markup=get_phone_reply_keyboard())
+            await state.update_data(phone_prompt_msg_id=msg.message_id)
+
+        if not from_contact and not validate_phone(phone):
+            await _show_phone_error("Некоректний номер телефону. Спробуй ще раз.")
             return
 
         normalized_phone = normalize_phone(phone)
         await UserCRUD.update_phone(session=session, telegram_id=message.from_user.id, phone=normalized_phone)
+
+        # Видаляємо попереднє повідомлення-запит
+        data = await state.get_data()
+        phone_prompt_msg_id = data.get("phone_prompt_msg_id")
+        if phone_prompt_msg_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=phone_prompt_msg_id)
+            except Exception:
+                pass
+                
         await state.clear()
 
         await message.answer(
@@ -1659,7 +1693,10 @@ async def changing_phone_input_handler(message: types.Message, state: FSMContext
         )
     except Exception as e:
         logger.error(f"Error in changing_phone_input_handler: {e}")
-        await message.answer("⚠️ Некоректний номер телефону. Спробуй ще раз.", parse_mode="HTML")
+        try:
+            await _show_phone_error("Технічна помилка. Спробуй ще раз.")
+        except Exception:
+            pass
 
 
 @router.message(F.text.in_({"☕ Переглянути меню", "☕️ Переглянути меню"}))
