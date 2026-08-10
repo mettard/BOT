@@ -252,15 +252,18 @@ async def _send_menu(
     """Load and show the main menu, then switch FSM to menu selection."""
     if await SystemSettingCRUD.is_orders_paused(session):
         await WaitlistCRUD.add_to_waitlist(session, message.from_user.id)
-        await message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+        msg = await message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
         await state.clear()
+        await state.update_data(current_view="orders_paused", cancel_msg_id=msg.message_id)
         return
 
     sheets_service = await get_sheets_service()
     menu = await sheets_service.get_menu()
 
     if not menu:
-        await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
+        msg = await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
+        await state.clear()
+        await state.update_data(current_view="menu_empty", cancel_msg_id=msg.message_id)
         return
 
     menu_items_text = _format_menu_items(menu)
@@ -409,7 +412,9 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
     except Exception as e:
         logger.error(f"Error in start_handler: {e}")
-        await message.answer("⚠️ Технічна помилка. Спробуй ще раз за хвилину.", parse_mode="HTML")
+        warning_msg = await message.answer("⚠️ Технічна помилка. Спробуй ще раз за хвилину.", parse_mode="HTML")
+        import asyncio
+        asyncio.create_task(_delete_warning_after(warning_msg, 4))
 
 
 @router.callback_query(F.data.in_(["cancel_order", "cancel_flow"]))
@@ -503,8 +508,9 @@ async def drink_selected_handler(
                 await query.message.delete()
             except Exception:
                 pass
-            await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+            msg = await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
             await state.clear()
+            await state.update_data(current_view="orders_paused", cancel_msg_id=msg.message_id)
             return
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
@@ -545,8 +551,9 @@ async def drink_selected_handler(
                     await query.message.delete()
                 except Exception:
                     pass
-                await query.message.answer(closed_notice, parse_mode="HTML")
+                msg = await query.message.answer(closed_notice, parse_mode="HTML")
                 await state.clear()
+                await state.update_data(current_view="closed", cancel_msg_id=msg.message_id)
                 return
         except Exception as parse_err:
             logger.error(f"Error parsing table times in instant check: {parse_err}")
@@ -638,7 +645,11 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
                 except Exception:
                     pass
             else:
-                msg = await message.answer(f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['time_prompt']}", parse_mode="HTML")
+                msg = await message.answer(
+                    f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['time_prompt']}",
+                    parse_mode="HTML",
+                    reply_markup=get_time_keyboard()
+                )
                 await state.update_data(time_prompt_msg_id=msg.message_id)
 
         if pickup_time is None:
@@ -1015,8 +1026,9 @@ async def open_favorite_order_handler(
             await query.message.delete()
         except Exception:
             pass
-        await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+        msg = await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
         await state.clear()
+        await state.update_data(current_view="orders_paused", cancel_msg_id=msg.message_id)
         return
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
@@ -1057,6 +1069,7 @@ async def open_favorite_order_handler(
             await query.message.edit_text(_format_closed_notice(nice_open, nice_close), parse_mode="HTML")
             await query.answer()
             await state.clear()
+            await state.update_data(current_view="closed", cancel_msg_id=query.message.message_id)
             return
     except Exception as parse_err:
         logger.error(f"Error parsing table times in favorite open handler: {parse_err}")
@@ -1099,8 +1112,9 @@ async def confirm_order_handler(
                 await query.message.delete()
             except Exception:
                 pass
-            await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+            msg = await query.message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
             await state.clear()
+            await state.update_data(current_view="orders_paused", cancel_msg_id=msg.message_id)
             return
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
@@ -1382,12 +1396,13 @@ async def new_order_handler(message: types.Message, state: FSMContext, session: 
         if not (start_work <= current_time <= end_work):
             nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
             nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
-            await message.answer(
+            msg = await message.answer(
                 _format_closed_notice(nice_open, nice_close),
                 parse_mode="HTML",
                 reply_markup=get_new_order_reply_keyboard(),
             )
             await state.clear()
+            await state.update_data(current_view="closed", cancel_msg_id=msg.message_id)
             return
     except Exception as parse_err:
         logger.error(f"Error parsing table times in new_order_handler: {parse_err}")

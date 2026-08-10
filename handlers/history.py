@@ -79,7 +79,7 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     target_msg_id = None
     if current_view == "menu":
         target_msg_id = data.get("menu_msg_id")
-    elif current_view in ("cancel", "nothing_to_cancel"):
+    elif current_view in ("cancel", "nothing_to_cancel", "orders_paused", "menu_empty", "closed"):
         target_msg_id = data.get("cancel_msg_id")
         
     if target_msg_id:
@@ -118,15 +118,27 @@ async def close_history_handler(query: types.CallbackQuery, state: FSMContext, s
         
         if saved_view == "menu":
             await start_handler(query.message, state, session, is_callback=True, edit_msg_id=target_msg_id)
-        elif saved_view in ("cancel", "nothing_to_cancel"):
-            text = MESSAGES["cancelled"] if saved_view == "cancel" else "Скасовувати нічого — у тебе немає активного процесу замовлення."
+        elif saved_view in ("cancel", "nothing_to_cancel", "orders_paused", "menu_empty", "closed"):
+            if saved_view == "cancel":
+                text = MESSAGES["cancelled"]
+            elif saved_view == "orders_paused":
+                text = MESSAGES["orders_paused"]
+            elif saved_view == "menu_empty":
+                text = MESSAGES["menu_empty"]
+            elif saved_view == "closed":
+                text = "⏸ <b>На жаль, кав'ярня зараз зачинена.</b>\nЗавітайте до нас пізніше! ☕️"
+            else:
+                text = "Скасовувати нічого — у тебе немає активного процесу."
+                
+            markup = get_start_menu_inline_keyboard() if saved_view in ("cancel", "nothing_to_cancel") else None
+            
             try:
                 await query.message.bot.edit_message_text(
                     chat_id=query.message.chat.id,
                     message_id=target_msg_id,
                     text=text,
                     parse_mode="HTML",
-                    reply_markup=get_start_menu_inline_keyboard()
+                    reply_markup=markup
                 )
             except Exception:
                 pass
