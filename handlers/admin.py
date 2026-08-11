@@ -36,11 +36,7 @@ async def admin_acknowledge_handler(
         await sheets_service.update_order_status(order_number=order_number, status="Ready")
 
         # Update notification message
-        from aiogram import Bot
-        from bot.config import settings
-
-        bot = Bot(token=settings.bot_token)
-        notification_service = AdminNotificationService(bot)
+        notification_service = AdminNotificationService(query.bot)
 
         await notification_service.send_acknowledgement_confirmation(
             admin_chat_id=query.message.chat.id,
@@ -49,7 +45,7 @@ async def admin_acknowledge_handler(
 
         # Сповіщення клієнту про прийняття
         try:
-            await bot.send_message(
+            await query.bot.send_message(
                 chat_id=order.telegram_id,
                 text=f"☕️ <b>Ваше замовлення #{order_number} прийнято!</b>\n\nБариста вже готує вашу каву. Очікуйте на вказаний час! 🎉",
                 parse_mode="HTML"
@@ -86,11 +82,7 @@ async def admin_cancel_handler(query: types.CallbackQuery, session: AsyncSession
         await sheets_service.update_order_status(order_number=order_number, status="Canceled")
 
         # Update notification message
-        from aiogram import Bot
-        from bot.config import settings
-
-        bot = Bot(token=settings.bot_token)
-        notification_service = AdminNotificationService(bot)
+        notification_service = AdminNotificationService(query.bot)
 
         await notification_service.send_cancellation_confirmation(
             admin_chat_id=query.message.chat.id,
@@ -98,15 +90,14 @@ async def admin_cancel_handler(query: types.CallbackQuery, session: AsyncSession
         )
 
         # Сповіщення клієнту про скасування
-
         try:
-            await bot.send_message(
+            await query.bot.send_message(
                 chat_id=order.telegram_id,
-                text=f"❌ <b>На жаль, замовлення #{order_number} скасовано кав'ярнею.</b>\n\nДля уточнення деталей ви можете зв'язатися з адміністратором.",
+                text=f"❌ <b>Ваше замовлення #{order_number} було скасовано.</b>\n\nЯкщо у вас є питання, зверніться до баристи.",
                 parse_mode="HTML"
             )
         except Exception as client_err:
-            logger.error(f"Could not send cancellation to client {order.telegram_id}: {client_err}")
+            logger.error(f"Could not send message to client {order.telegram_id}: {client_err}")
 
         await query.answer("❌ Замовлення скасовано", show_alert=False)
         logger.info(f"Order {order_number} cancelled successfully")
@@ -179,15 +170,13 @@ async def resume_orders_handler(message: types.Message, session: AsyncSession) -
     # Send notifications to waiting clients
     notified_count = 0
 
-    from aiogram import Bot
     from bot.keyboards.inline import get_start_menu_inline_keyboard
 
-    bot = Bot(token=settings.bot_token)
     client_keyboard = get_start_menu_inline_keyboard()
 
     for user_id in waiting_users:
         try:
-            await bot.send_message(
+            await message.bot.send_message(
                 chat_id=user_id,
                 text="☕️ <b>Кав'ярня знову приймає замовлення!</b>\n\nЗапрошуємо обрати свій улюблений напій. Натисніть кнопку внизу! 🎉",
                 parse_mode="HTML",

@@ -47,6 +47,8 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
             pass
         return
 
+    from bot.handlers.order import _cleanup_fsm_messages
+    
     # Очищаємо попередні меню
     await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
 

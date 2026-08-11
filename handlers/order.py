@@ -250,9 +250,17 @@ async def _send_menu(
     edit_message_id: int | None = None,
 ) -> None:
     """Load and show the main menu, then switch FSM to menu selection."""
+    user_id = message.chat.id
+    
     if await SystemSettingCRUD.is_orders_paused(session):
-        await WaitlistCRUD.add_to_waitlist(session, message.from_user.id)
+        await WaitlistCRUD.add_to_waitlist(session, user_id)
+        if edit_message_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=edit_message_id)
+            except Exception:
+                pass
         msg = await message.answer(MESSAGES["orders_paused"], parse_mode="HTML")
+        await UserCRUD.update_last_bot_msg_id(session, user_id, msg.message_id)
         await state.clear()
         await state.update_data(current_view="orders_paused", cancel_msg_id=msg.message_id)
         return
@@ -261,7 +269,13 @@ async def _send_menu(
     menu = await sheets_service.get_menu()
 
     if not menu:
+        if edit_message_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=edit_message_id)
+            except Exception:
+                pass
         msg = await message.answer(MESSAGES["menu_empty"], parse_mode="HTML")
+        await UserCRUD.update_last_bot_msg_id(session, user_id, msg.message_id)
         await state.clear()
         await state.update_data(current_view="menu_empty", cancel_msg_id=msg.message_id)
         return
@@ -296,6 +310,7 @@ async def _send_menu(
         )
         menu_msg_id = menu_msg.message_id
 
+    await UserCRUD.update_last_bot_msg_id(session, message.chat.id, menu_msg_id)
     await state.update_data(menu=menu, menu_msg_id=menu_msg_id, current_view="menu")
     await state.set_state(OrderFSM.menu_selection)
 
@@ -341,6 +356,12 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
     user_id = message.chat.id if is_callback else message.from_user.id
     logger.info(f"User {user_id} started bot")
 
+    if not is_callback:
+        try:
+            await message.delete()  # Завжди очищаємо команду /start для чистоти чату
+        except Exception:
+            pass
+
     try:
        # ==========================================
         # 💥 ЗАХИСТ ВІД ДУБЛІВ МЕНЮ ТА ПЕРЕКРИТТЯ КРОКІВ
@@ -350,12 +371,6 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
         
         current_state = await state.get_state()
         if current_state is not None:
-            if not is_callback:
-                try:
-                    await message.delete()  # Очищаємо чат від зайвих команд
-                except Exception:
-                    pass
-            
             if not is_callback:
                 warning_msg = await message.answer(
                     "⚠️ <b>Ти вже в процесі оформлення замовлення!</b>\n"
@@ -386,6 +401,9 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=user_model_id)
         if active_order is not None:
+            if is_callback and edit_msg_id:
+                pass # Не видаляємо повідомлення, хай залишається чек
+            
             warning_msg = await message.answer(
                 _format_active_order_notice(active_order.order_number, active_status),
                 parse_mode="HTML",
@@ -398,6 +416,14 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
                 pass
             await state.clear()
             return
+
+        # Очищуємо "мертві" меню з бази, тільки якщо ми дійсно збираємось показати нове меню
+        if user.last_bot_msg_id and not is_callback:
+            try:
+                await message.bot.delete_message(chat_id=user_model_id, message_id=user.last_bot_msg_id)
+            except Exception:
+                pass
+            await UserCRUD.update_last_bot_msg_id(session, user_model_id, None)
             
         if not is_callback:
             await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
@@ -930,9 +956,16 @@ async def notes_input_handler(message: types.Message, state: FSMContext, session
     notes_prompt_msg_id = data.get("notes_prompt_msg_id")
     await _show_confirmation(message, state, session=session, source_message_id=notes_prompt_msg_id)
 
-@router.message(StateFilter(OrderFSM.time_input, OrderFSM.phone_input, OrderFSM.notes_input))
+@router.message(StateFilter(
+    OrderFSM.menu_selection, 
+    OrderFSM.time_input, 
+    OrderFSM.phone_input, 
+    OrderFSM.notes_input,
+    OrderFSM.confirmation,
+    OrderFSM.changing_phone
+))
 async def wrong_content_fsm_handler(message: types.Message) -> None:
-    """Ловить стікери, фото, відео під час FSM і видаляє їх."""
+    """Ловить невідповідний текст, стікери, фото, відео під час FSM і видаляє їх."""
     try:
         await message.delete()
     except Exception:
@@ -1627,7 +1660,8 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
     if active_order is not None:
         warning_msg = await message.answer(
-            _format_active_order_notice(active_order.order_number, active_status),
+            f"⚠️ <b>Ти не можеш змінити номер телефону, поки виконується замовлення #{active_order.order_number}.</b>\n\n"
+            f"Будь ласка, дочекайся його завершення.",
             parse_mode="HTML",
         )
         import asyncio
@@ -1793,3 +1827,11 @@ async def global_dead_callback_catcher(query: types.CallbackQuery, state: FSMCon
         except Exception:
             pass
         await query.message.answer(text, parse_mode="HTML", reply_markup=markup)
+
+@router.message()
+async def global_fallback_handler(message: types.Message) -> None:
+    """Глобальний перехоплювач для будь-яких невідомих повідомлень, щоб зберігати чистоту чату (1-message UI)."""
+    try:
+        await message.delete()
+    except Exception:
+        pass

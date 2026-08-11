@@ -25,6 +25,7 @@ class User(Base):
     favorite_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     favorite_phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     favorite_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_bot_msg_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc), server_default=func.now()
     )

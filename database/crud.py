@@ -40,6 +40,18 @@ class UserCRUD:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def update_last_bot_msg_id(session: AsyncSession, telegram_id: int, msg_id: Optional[int]) -> Optional[User]:
+        """Update user's last bot message ID."""
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if user:
+            user.last_bot_msg_id = msg_id
+            await session.commit()
+        return user
+
+    @staticmethod
     async def update_phone(session: AsyncSession, telegram_id: int, phone: str) -> User:
         """Update user phone number."""
         stmt = select(User).where(User.telegram_id == telegram_id)
