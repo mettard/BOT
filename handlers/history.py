@@ -29,28 +29,20 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
         pass
 
     current_state = await state.get_state()
-    from bot.handlers.order import _clear_warning, _get_active_order_state
+    from bot.handlers.order import _get_active_order_state
+    from bot.services.ui_manager import UIManager
     
     active_order, _ = await _get_active_order_state(session=session, telegram_id=user_id)
     
     if current_state is not None or active_order is not None:
         # Клієнт в процесі замовлення або вже очікує на напій
-        warning_msg = await message.answer(
-            "⚠️ <b>Закінчи або дочекайся поточного замовлення перед тим, як переглядати історію.</b>",
-            parse_mode="HTML"
+        await UIManager.show_toast(
+            bot=message.bot,
+            chat_id=user_id,
+            text="⚠️ <b>Закінчи або дочекайся поточного замовлення перед тим, як переглядати історію.</b>",
+            duration=4
         )
-        import asyncio
-        await asyncio.sleep(4)
-        try:
-            await warning_msg.delete()
-        except Exception:
-            pass
         return
-
-    from bot.handlers.order import _cleanup_fsm_messages
-    
-    # Очищаємо попередні меню
-    await _cleanup_fsm_messages(message, state, remove_reply_keyboard=False)
 
     # Отримуємо останні замовлення
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session, telegram_id=user_id, limit=10)
@@ -75,80 +67,21 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
 
         history_text = "\n\n".join(history_lines)
     
-    data = await state.get_data()
-    current_view = data.get("current_view")
-    
-    target_msg_id = None
-    if current_view == "menu":
-        target_msg_id = data.get("menu_msg_id")
-    elif current_view in ("cancel", "nothing_to_cancel", "orders_paused", "menu_empty", "closed"):
-        target_msg_id = data.get("cancel_msg_id")
-        
-    if target_msg_id:
-        try:
-            await message.bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=target_msg_id,
-                text=history_text,
-                parse_mode="HTML",
-                reply_markup=get_close_history_keyboard()
-            )
-            await state.update_data(saved_view=current_view, history_target_msg_id=target_msg_id)
-            return
-        except Exception:
-            pass
-
-    history_msg = await message.answer(
-        history_text,
-        parse_mode="HTML",
-        reply_markup=get_close_history_keyboard()
+    await UIManager.show_screen(
+        bot=message.bot,
+        session=session,
+        chat_id=user_id,
+        text=history_text,
+        markup=get_close_history_keyboard()
     )
-    await state.update_data(history_msg_id=history_msg.message_id)
 
 @router.callback_query(F.data == "close_history")
 async def close_history_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """Відновлює попередній екран замість видалення історії."""
+    """Відновлює головне меню замість історії."""
     await query.answer()
     
-    data = await state.get_data()
-    saved_view = data.get("saved_view")
-    target_msg_id = data.get("history_target_msg_id")
+    from bot.handlers.order import start_handler
     
-    if saved_view and target_msg_id:
-        from bot.handlers.order import start_handler, MESSAGES
-        from bot.keyboards.inline import get_start_menu_inline_keyboard
-        
-        if saved_view == "menu":
-            await start_handler(query.message, state, session, is_callback=True, edit_msg_id=target_msg_id)
-        elif saved_view in ("cancel", "nothing_to_cancel", "orders_paused", "menu_empty", "closed"):
-            if saved_view == "cancel":
-                text = MESSAGES["cancelled"]
-            elif saved_view == "orders_paused":
-                text = MESSAGES["orders_paused"]
-            elif saved_view == "menu_empty":
-                text = MESSAGES["menu_empty"]
-            elif saved_view == "closed":
-                text = "⏸ <b>На жаль, кав'ярня зараз зачинена.</b>\nЗавітайте до нас пізніше! ☕️"
-            else:
-                text = "Скасовувати нічого — у тебе немає активного процесу."
-                
-            markup = get_start_menu_inline_keyboard() if saved_view in ("cancel", "nothing_to_cancel") else None
-            
-            try:
-                await query.message.bot.edit_message_text(
-                    chat_id=query.message.chat.id,
-                    message_id=target_msg_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
-            except Exception:
-                pass
-        
-        await state.update_data(saved_view=None, history_target_msg_id=None)
-    else:
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        await state.update_data(history_msg_id=None)
+    # Викликаємо start_handler, який автоматично відновить правильний екран (меню або паузу)
+    # через наш новий UIManager
+    await start_handler(query.message, state, session, is_callback=True)

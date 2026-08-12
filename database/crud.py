@@ -46,9 +46,16 @@ class UserCRUD:
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
-        if user:
-            user.last_bot_msg_id = msg_id
-            await session.commit()
+        if not user:
+            user = User(
+                telegram_id=telegram_id,
+                first_name="Unknown",
+                last_name=None,
+            )
+            session.add(user)
+
+        user.last_bot_msg_id = msg_id
+        await session.commit()
         return user
 
     @staticmethod
