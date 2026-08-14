@@ -34,8 +34,7 @@ class AdminNotificationService:
         price: float,
         pickup_time: datetime,
         notes: str = "",
-        user_id: int = 0,
-        receipt_msg_id: int = 0,
+        user_id: int = 0
     ) -> int | None:
         """Send order notification to admin chat.
         
@@ -48,7 +47,7 @@ class AdminNotificationService:
             price: Price in UAH
             pickup_time: Pickup time
             notes: Additional notes
-            receipt_msg_id: Message ID of the receipt
+            user_id: Telegram ID of the user
         Returns:
             Message ID if sent successfully, None otherwise
         """
@@ -70,22 +69,7 @@ class AdminNotificationService:
             )
 
             # Build inline keyboard
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="✓ Прийняти",
-                            callback_data=f"admin_ack_{order_number}",
-                        ),
-                        InlineKeyboardButton(
-                            text="✗ Скасувати",
-                            callback_data=f"admin_cancel_{order_number}",
-                        ),
-                    ]
-                ]
-            )
-
-            keyboard = get_admin_order_keyboard(order_number, user_id, receipt_msg_id=receipt_msg_id)
+            keyboard = get_admin_order_keyboard(order_number, user_id)
             # Send message
             msg = await self.bot.send_message(
                 chat_id=self.admin_chat_id,

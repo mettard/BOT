@@ -103,23 +103,22 @@ def get_back_to_time_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🔙 Назад", callback_data="back_to_time")
     return builder.as_markup()
 
-def get_admin_order_keyboard(order_number: str, user_id: int, current_status: str = "new", client_msg_id: int = 0, receipt_msg_id: int = 0) -> InlineKeyboardMarkup | None:
+def get_admin_order_keyboard(order_number: str, user_id: int, current_status: str = "new") -> InlineKeyboardMarkup | None:
     """Динамічна клавіатура для керування статусом замовлення."""
     builder = InlineKeyboardBuilder()
     
-    # Зверни увагу: ми додали receipt_msg_id у кожну кнопку
     if current_status == "new":
-        builder.button(text="🟡 Прийняти", callback_data=f"adm_st:acc:{order_number}:{user_id}:{client_msg_id}:{receipt_msg_id}")
-        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}:{client_msg_id}:{receipt_msg_id}")
+        builder.button(text="🟡 Прийняти", callback_data=f"adm_st:acc:{order_number}:{user_id}")
+        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}")
         builder.adjust(2)
         
     elif current_status == "acc":
-        builder.button(text="🔥 Готується", callback_data=f"adm_st:prep:{order_number}:{user_id}:{client_msg_id}:{receipt_msg_id}")
-        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}:{client_msg_id}:{receipt_msg_id}")
+        builder.button(text="🔥 Готується", callback_data=f"adm_st:prep:{order_number}:{user_id}")
+        builder.button(text="❌ Скасувати", callback_data=f"adm_st:canc:{order_number}:{user_id}")
         builder.adjust(2)
         
     elif current_status == "prep":
-        builder.button(text="✅ Готово", callback_data=f"adm_st:rdy:{order_number}:{user_id}:{client_msg_id}:{receipt_msg_id}")
+        builder.button(text="✅ Готово", callback_data=f"adm_st:rdy:{order_number}:{user_id}")
         builder.adjust(1)
         
     else:
@@ -156,11 +155,10 @@ def get_user_cancel_keyboard(order_number: str, admin_msg_id: int) -> InlineKeyb
     return builder.as_markup()
 
 
-def get_new_order_inline_keyboard(receipt_msg_id: int = 0) -> InlineKeyboardMarkup:
+def get_new_order_inline_keyboard() -> InlineKeyboardMarkup:
     """Inline keyboard for starting a new order from a status message."""
     builder = InlineKeyboardBuilder()
-    callback = f"new_order_inline:{receipt_msg_id}" if receipt_msg_id != 0 else "new_order_inline"
-    builder.button(text="☕ Нове замовлення", callback_data=callback)
+    builder.button(text="☕ Нове замовлення", callback_data="new_order_inline")
     return builder.as_markup()
 
 def get_admin_stop_orders_reply_keyboard(is_paused: bool = False) -> ReplyKeyboardMarkup:

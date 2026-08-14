@@ -253,7 +253,7 @@ async def _send_menu(
     await state.set_state(OrderFSM.menu_selection)
 
 
-@router.callback_query(F.data.startswith("new_order_inline") | (F.data == "open_menu_inline"))
+@router.callback_query(F.data.in_({"new_order_inline", "open_menu_inline"}))
 async def inline_menu_triggers_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle inline buttons to start a new order or open menu."""
     
@@ -273,17 +273,6 @@ async def inline_menu_triggers_handler(query: types.CallbackQuery, state: FSMCon
     
     # В усіх цих випадках поточне повідомлення перетвориться на меню
     edit_msg_id = query.message.message_id
-
-    # Якщо це нове замовлення після успішного чека, видаляємо старий чек
-    if query.data.startswith("new_order_inline:"):
-        parts = query.data.split(":")
-        if len(parts) > 1:
-            try:
-                receipt_msg_id = int(parts[1])
-                if receipt_msg_id != 0:
-                    await query.bot.delete_message(chat_id=query.message.chat.id, message_id=receipt_msg_id)
-            except Exception:
-                pass
     
     # We pretend this was a /start command to use the robust start logic
     await start_handler(query.message, state, session, is_callback=True, edit_msg_id=edit_msg_id)
@@ -392,15 +381,13 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
 
         # If there is nothing to cancel (state is completely empty), handle quietly
         if not data and not isinstance(message_or_query, types.CallbackQuery):
-            await UIManager.show_screen(
+            await UIManager.show_toast(
                 bot=bot,
-                session=session,
                 chat_id=chat_id,
                 text="Скасовувати нічого — у тебе немає активного процесу.",
-                markup=get_start_menu_inline_keyboard()
+                duration=4
             )
             await state.clear()
-            await state.update_data(current_view="nothing_to_cancel")
             return
 
         if current_state == OrderFSM.changing_phone.state:
@@ -1022,20 +1009,7 @@ async def confirm_order_handler(
 
         await query.answer()
 
-        # Show success message (RECEIPT)
-        pickup_time_str_display = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
-        text = MESSAGES["success"].format(order_id=order.order_number, pickup_time=pickup_time_str_display)
-        markup = get_new_order_inline_keyboard()
-
-        receipt_msg = await UIManager.show_screen(
-            bot=bot,
-            session=session,
-            chat_id=query.message.chat.id,
-            text=text,
-            markup=markup
-        )
-
-        # Send notification to admin AFTER sending receipt to get the correct receipt_msg_id
+        # Send notification to admin FIRST to get admin_msg_id
         from bot.services.notifications import AdminNotificationService
         notification_service = AdminNotificationService(bot)
         admin_msg_id = await notification_service.send_order_notification(
@@ -1047,8 +1021,22 @@ async def confirm_order_handler(
             price=drink.get("price", 0),
             pickup_time=pickup_time,
             notes=notes,
-            user_id=query.from_user.id,
-            receipt_msg_id=receipt_msg.message_id,  
+            user_id=query.from_user.id
+        )
+
+        # Show success message (RECEIPT)
+        pickup_time_str_display = pickup_time.strftime("%d.%m.%Y %H:%M") if pickup_time else "—"
+        text = MESSAGES["success"].format(order_id=order.order_number, pickup_time=pickup_time_str_display)
+        
+        from bot.keyboards.inline import get_user_cancel_keyboard
+        markup = get_user_cancel_keyboard(order_number=order_number, admin_msg_id=admin_msg_id or 0)
+
+        receipt_msg = await UIManager.show_screen(
+            bot=bot,
+            session=session,
+            chat_id=query.message.chat.id,
+            text=text,
+            markup=markup
         )
 
         # Clear FSM and keep the success screen until the user asks for a new order
@@ -1284,6 +1272,7 @@ async def user_cancel_active_order_handler(query: types.CallbackQuery, session: 
             session=session,
             chat_id=query.message.chat.id,
             text=f"❌ Ваше замовлення <b>{order_number}</b> успішно скасовано.\n\nЧекаємо вас наступного разу! ☕️",
+            markup=get_start_menu_inline_keyboard()
         )
         await query.answer("Замовлення скасовано.")
         
@@ -1309,17 +1298,15 @@ STATUS_MAP = {
 async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession) -> None:
     """Обробляє зміну статусу з динамічним оновленням ЄДИНОГО повідомлення у клієнта."""
     
-    # Розпаковуємо дані (тепер у нас 6 елементів)
+    # Розпаковуємо дані
     parts = query.data.split(":")
-    if len(parts) < 5:
+    if len(parts) < 4:
         await query.answer("❌ Помилка даних кнопки", show_alert=True)
         return
         
     status_key = parts[1]
     order_number = parts[2]
     user_id = int(parts[3])
-    client_msg_id = int(parts[4])
-    receipt_msg_id = int(parts[5]) if len(parts) >= 6 else 0
 
     # 1. ЗАХИСТ ВІД "МЕРТВИХ КНОПОК"
     try:
@@ -1365,10 +1352,9 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
 
     # 3. МАГІЯ ЄДИНОГО ВІКНА + PUSH-ПОВІДОМЛЕННЯ
     formatted_message = client_message.format(order_number=order_number)
-    new_client_msg_id = client_msg_id
 
     try:
-        markup = get_new_order_inline_keyboard(receipt_msg_id=receipt_msg_id)
+        markup = get_new_order_inline_keyboard()
         
         force_new_msg = status_key in ["rdy", "canc"]
         
@@ -1387,13 +1373,11 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
         import logging
         logging.error(f"Не зміг оновити/відправити повідомлення клієнту {user_id}: {e}")
 
-    # 4. Генеруємо нову клавіатуру для адміна (передаємо обидва ID)
+    # 4. Генеруємо нову клавіатуру для адміна
     new_keyboard = get_admin_order_keyboard(
         order_number, 
         user_id, 
-        current_status=status_key, 
-        client_msg_id=new_client_msg_id,
-        receipt_msg_id=receipt_msg_id
+        current_status=status_key
     )
     
     # 5. Оновлюємо адмінську картку баристи
