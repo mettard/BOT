@@ -172,6 +172,17 @@ def _format_active_order_notice(order_number: str, status_text: str | None) -> s
         f"Почекай, будь ласка, поки кава буде готова."
     )
 
+async def _show_active_order_screen(bot: Any, session: AsyncSession, chat_id: int, active_order: Any, active_status: str | None) -> None:
+    from bot.keyboards.inline import get_user_cancel_keyboard
+    markup = get_user_cancel_keyboard(order_number=active_order.order_number, admin_msg_id=0)
+    await UIManager.show_screen(
+        bot=bot,
+        session=session,
+        chat_id=chat_id,
+        text=_format_active_order_notice(active_order.order_number, active_status),
+        markup=markup
+    )
+
 
 async def _get_latest_order_state(session: AsyncSession, telegram_id: int) -> tuple[Any | None, str | None]:
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session=session, telegram_id=telegram_id, limit=1)
@@ -257,16 +268,10 @@ async def _send_menu(
 async def inline_menu_triggers_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle inline buttons to start a new order or open menu."""
     
-    # Перевіряємо, чи є вже активне замовлення
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
     if active_order is not None:
-        status_display = active_status or "в роботі"
-        await query.answer(
-            f"⏳ У тебе вже є активне замовлення #{active_order.order_number}\n\n"
-            f"Статус: {status_display}\n\n"
-            f"Почекай, будь ласка, поки кава буде готова.",
-            show_alert=True
-        )
+        await query.answer()
+        await _show_active_order_screen(query.bot, session, query.message.chat.id, active_order, active_status)
         return
         
     await query.answer()
@@ -322,12 +327,7 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=user_model_id)
         if active_order is not None:
-            await UIManager.show_toast(
-                bot=message.bot,
-                chat_id=user_id,
-                text=_format_active_order_notice(active_order.order_number, active_status),
-                duration=4
-            )
+            await _show_active_order_screen(message.bot, session, user_id, active_order, active_status)
             await state.clear()
             return
             
@@ -435,13 +435,8 @@ async def drink_selected_handler(
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
         if active_order is not None:
-            await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
-            await UIManager.show_screen(
-                bot=query.message.bot,
-                session=session,
-                chat_id=query.message.chat.id,
-                text=_format_active_order_notice(active_order.order_number, active_status),
-            )
+            await query.answer()
+            await _show_active_order_screen(query.message.bot, session, query.message.chat.id, active_order, active_status)
             await state.clear()
             return
 
@@ -868,13 +863,8 @@ async def open_favorite_order_handler(
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
     if active_order is not None:
-        await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
-        await UIManager.show_screen(
-            bot=query.message.bot,
-            session=session,
-            chat_id=query.message.chat.id,
-            text=_format_active_order_notice(active_order.order_number, active_status),
-        )
+        await query.answer()
+        await _show_active_order_screen(query.message.bot, session, query.message.chat.id, active_order, active_status)
         await state.clear()
         return
 
@@ -960,13 +950,8 @@ async def confirm_order_handler(
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
         if active_order is not None:
-            await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
-            await UIManager.show_screen(
-                bot=query.message.bot,
-                session=session,
-                chat_id=query.message.chat.id,
-                text=_format_active_order_notice(active_order.order_number, active_status),
-            )
+            await query.answer()
+            await _show_active_order_screen(query.message.bot, session, query.message.chat.id, active_order, active_status)
             await state.clear()
             return
 
@@ -1060,13 +1045,8 @@ async def back_to_menu_handler(query: types.CallbackQuery, state: FSMContext, se
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
     if active_order is not None:
-        await query.answer("⏳ У тебе вже є активне замовлення", show_alert=True)
-        await UIManager.show_screen(
-            bot=query.message.bot,
-            session=session,
-            chat_id=query.message.chat.id,
-            text=_format_active_order_notice(active_order.order_number, active_status)
-        )
+        await query.answer()
+        await _show_active_order_screen(query.message.bot, session, query.message.chat.id, active_order, active_status)
         await state.clear()
         return
 
@@ -1177,12 +1157,7 @@ async def new_order_handler(message: types.Message, state: FSMContext, session: 
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
     if active_order is not None:
-        await UIManager.show_screen(
-            bot=message.bot,
-            session=session,
-            chat_id=message.chat.id,
-            text=_format_active_order_notice(active_order.order_number, active_status),
-        )
+        await _show_active_order_screen(message.bot, session, message.chat.id, active_order, active_status)
         await state.clear()
         return
 
@@ -1419,12 +1394,7 @@ async def change_phone_cmd_handler(message: types.Message, state: FSMContext, se
 
     active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
     if active_order is not None:
-        await UIManager.show_toast(
-            bot=message.bot,
-            chat_id=message.chat.id,
-            text=f"⚠️ <b>Ти не можеш змінити номер телефону, поки виконується замовлення #{active_order.order_number}.</b>\n\nБудь ласка, дочекайся його завершення.",
-            duration=4
-        )
+        await _show_active_order_screen(message.bot, session, message.chat.id, active_order, active_status)
         return
 
     await state.clear()
