@@ -1,4 +1,5 @@
 """Inline and reply keyboards for CoffeeRun bot."""
+from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton

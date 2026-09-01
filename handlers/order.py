@@ -1,4 +1,5 @@
 """Order handling router with FSM flow."""
+from __future__ import annotations
 
 import logging
 from datetime import datetime, time

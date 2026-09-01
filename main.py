@@ -3,6 +3,19 @@
 import asyncio
 import logging
 import sys
+import types
+from pathlib import Path
+
+# Ensure root directory and 'bot' module are always registered in Python path
+_root_dir = Path(__file__).resolve().parent
+if str(_root_dir) not in sys.path:
+    sys.path.insert(0, str(_root_dir))
+
+if "bot" not in sys.modules:
+    _bot_pkg = types.ModuleType("bot")
+    _bot_pkg.__path__ = [str(_root_dir)]
+    _bot_pkg.__package__ = "bot"
+    sys.modules["bot"] = _bot_pkg
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage

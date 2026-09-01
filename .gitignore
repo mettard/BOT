@@ -1,2 +1,51 @@
+# --- Environment & Secrets ---
+.env
+.env.*
+*.env
+service_account.json
+*service_account*.json
+credentials.json
+client_secret*.json
+
+# --- SQLite Databases ---
+*.db
+*.sqlite
+*.sqlite3
+cafe_bot.db
+coffeerun.db
+
+# --- Python Cache & Bytecode ---
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- OS Specific Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- IDE & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# --- Logs ---
+*.log
+logs/

@@ -33,7 +33,11 @@ class Settings(BaseSettings):
     class Config:
         """Pydantic settings configuration."""
 
-        env_file = Path(__file__).parent.parent / ".env"
+        env_file = (
+            Path(__file__).parent / ".env",
+            Path(__file__).parent.parent / ".env",
+            ".env",
+        )
         case_sensitive = False
 
 
