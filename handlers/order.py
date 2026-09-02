@@ -258,7 +258,7 @@ async def _send_menu(
 
     await UIManager.show_screen(
         bot=message.bot, session=session, chat_id=user_id,
-        text=text, markup=markup
+        text=text, markup=markup, edit_msg_id=edit_message_id
     )
 
     await state.update_data(menu=menu, current_view="menu")
@@ -337,6 +337,7 @@ async def start_handler(message: types.Message, state: FSMContext, session: Asyn
             state,
             session,
             favorite_drink_name=user.favorite_drink_name,
+            edit_message_id=edit_msg_id
         )
 
     except Exception as e:
@@ -1285,6 +1286,7 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
     user_id = int(parts[3])
 
     # 1. ЗАХИСТ ВІД "МЕРТВИХ КНОПОК"
+    sheets_service = None
     try:
         from bot.services.google_sheets import get_sheets_service
         sheets_service = await get_sheets_service()
@@ -1305,14 +1307,17 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
     # 💥 НОВЕ: ЗНИЩУЄМО КНОПКУ У КЛІЄНТА НА ЧЕКУ
     # ==========================================
     # Якщо бариста натиснув будь-який статус, прибираємо кнопку з оригінального чека
-    if status_key in ["acc", "prep", "rdy", "canc"] and receipt_msg_id != 0:
+    if status_key in ["acc", "prep", "rdy", "canc"]:
         try:
-            # Змінюємо клавіатуру оригінального чека на None (порожнечу)
-            await query.bot.edit_message_reply_markup(
-                chat_id=user_id, 
-                message_id=receipt_msg_id, 
-                reply_markup=None
-            )
+            from bot.database.crud import UserCRUD
+            user = await UserCRUD.get_by_telegram_id(session, user_id)
+            if user and user.last_bot_msg_id:
+                # Змінюємо клавіатуру оригінального чека на None (порожнечу)
+                await query.bot.edit_message_reply_markup(
+                    chat_id=user_id, 
+                    message_id=user.last_bot_msg_id, 
+                    reply_markup=None
+                )
         except Exception as e:
             pass
     # ==========================================
@@ -1320,11 +1325,12 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
     status_name, client_message = STATUS_MAP.get(status_key, ("Невідомо", ""))
     
     # 2. Оновлюємо статус в Google Таблицях
-    try:
-        await sheets_service.update_order_status(order_number, status_name)
-    except Exception as e:
-        import logging
-        logging.error(f"Не вдалося оновити статус в таблиці: {e}")
+    if sheets_service:
+        try:
+            await sheets_service.update_order_status(order_number, status_name)
+        except Exception as e:
+            import logging
+            logging.error(f"Не вдалося оновити статус в таблиці: {e}")
 
     # 3. МАГІЯ ЄДИНОГО ВІКНА + PUSH-ПОВІДОМЛЕННЯ
     formatted_message = client_message.format(order_number=order_number)

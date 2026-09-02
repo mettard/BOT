@@ -25,15 +25,17 @@ class UIManager:
         markup: Optional[InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemove] = None,
         force_reply_keyboard_remove: bool = False,
         force_new: bool = False,
+        edit_msg_id: Optional[int] = None,
     ) -> types.Message:
         """
         Displays a persistent screen.
         Tries to edit the existing message to prevent flickering, unless a ReplyKeyboard is required.
         Always tracks the active message ID in the database.
         """
+        
         user = await UserCRUD.get_by_telegram_id(session, chat_id)
-        last_msg_id = user.last_bot_msg_id if user else None
-
+        last_msg_id = edit_msg_id if edit_msg_id else (user.last_bot_msg_id if user else None)
+        
         requires_new_message = force_new or isinstance(markup, (ReplyKeyboardMarkup, ReplyKeyboardRemove)) or force_reply_keyboard_remove
         new_msg = None
 
