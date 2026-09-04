@@ -562,13 +562,11 @@ async def time_input_handler(message: types.Message, state: FSMContext, session:
     try:
         pickup_time = parse_time_input(message.text)
         async def _show_time_error(error_text: str):
-            from bot.keyboards.inline import get_time_keyboard
-            await UIManager.show_screen(
+            await UIManager.show_toast(
                 bot=message.bot,
-                session=session,
                 chat_id=message.chat.id,
-                text=f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['time_prompt']}",
-                markup=get_time_keyboard()
+                text=f"⚠️ <b>{error_text}</b>",
+                duration=4
             )
 
         if pickup_time is None:
@@ -679,12 +677,11 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
             return
 
         async def _show_phone_error(error_text: str):
-            await UIManager.show_screen(
+            await UIManager.show_toast(
                 bot=message.bot,
-                session=session,
                 chat_id=message.chat.id,
-                text=f"⚠️ <b>{error_text}</b>\n\n{MESSAGES['phone_prompt']}",
-                markup=get_phone_reply_keyboard()
+                text=f"⚠️ <b>{error_text}</b>",
+                duration=4
             )
 
         if not from_contact and not validate_phone(phone):
@@ -782,13 +779,11 @@ async def notes_input_handler(message: types.Message, state: FSMContext, session
     notes = message.text.strip()
     
     if len(notes) > 100:
-        from bot.keyboards.inline import get_notes_keyboard
-        await UIManager.show_screen(
+        await UIManager.show_toast(
             bot=message.bot,
-            session=session,
             chat_id=message.chat.id,
-            text=f"⚠️ <b>Побажання занадто довге!</b> Максимум 100 символів.\n\n{MESSAGES['notes_prompt']}",
-            markup=get_notes_keyboard()
+            text="⚠️ <b>Побажання занадто довге!</b> Максимум 100 символів.",
+            duration=4
         )
         return
         
@@ -868,12 +863,11 @@ async def changing_phone_input_handler(message: types.Message, state: FSMContext
             return
 
         async def _show_phone_error(error_text: str):
-            await UIManager.show_screen(
+            await UIManager.show_toast(
                 bot=message.bot,
-                session=session,
                 chat_id=message.chat.id,
-                text=f"⚠️ <b>{error_text}</b>\n\n📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
-                markup=get_phone_reply_keyboard()
+                text=f"⚠️ <b>{error_text}</b>",
+                duration=4
             )
 
         if not from_contact and not validate_phone(phone):
