@@ -31,18 +31,21 @@ async def history_command_handler(message: types.Message, state: FSMContext, ses
     current_state = await state.get_state()
     from bot.handlers.order import _get_active_order_state
     from bot.services.ui_manager import UIManager
+    from bot.states.order import OrderFSM
     
     active_order, _ = await _get_active_order_state(session=session, telegram_id=user_id)
     
-    if current_state is not None or active_order is not None:
-        # Клієнт в процесі замовлення або вже очікує на напій
+    if (current_state is not None and current_state != OrderFSM.menu_selection.state) or active_order is not None:
+        # Клієнт в процесі замовлення (але не просто в меню) або вже очікує на напій
         await UIManager.show_toast(
             bot=message.bot,
             chat_id=user_id,
-            text="⚠️ <b>Закінчи або дочекайся поточного замовлення перед тим, як переглядати історію.</b>",
+            text="⚠️ <b>Ти вже в процесі замовлення.</b>\nЗакінчи або скасуй його, щоб переглянути історію.",
             duration=4
         )
         return
+        
+    await state.clear()
 
     # Отримуємо останні замовлення
     recent_orders = await OrderCRUD.get_by_telegram_id_recent(session, telegram_id=user_id, limit=10)

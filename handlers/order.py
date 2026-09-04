@@ -175,7 +175,14 @@ def _format_active_order_notice(order_number: str, status_text: str | None) -> s
 
 async def _show_active_order_screen(bot: Any, session: AsyncSession, chat_id: int, active_order: Any, active_status: str | None) -> None:
     from bot.keyboards.inline import get_user_cancel_keyboard
-    markup = get_user_cancel_keyboard(order_number=active_order.order_number, admin_msg_id=0)
+    
+    can_cancel = active_status == "New"
+    
+    if can_cancel:
+        markup = get_user_cancel_keyboard(order_number=active_order.order_number, admin_msg_id=0)
+    else:
+        markup = None
+        
     await UIManager.show_screen(
         bot=bot,
         session=session,
@@ -218,11 +225,12 @@ async def _send_menu(
     favorite_drink_name: str | None = None,
     remove_reply_keyboard: bool = False,
     edit_message_id: int | None = None,
+    ignore_pause: bool = False,
 ) -> None:
     """Load and show the main menu, then switch FSM to menu selection."""
     user_id = message.chat.id
     
-    if await SystemSettingCRUD.is_orders_paused(session):
+    if not ignore_pause and await SystemSettingCRUD.is_orders_paused(session):
         await WaitlistCRUD.add_to_waitlist(session, user_id)
         await UIManager.show_screen(
             bot=message.bot, session=session, chat_id=user_id,
@@ -461,12 +469,14 @@ async def drink_selected_handler(
                 nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
                 closed_notice = _format_closed_notice(nice_open, nice_close)
 
+                from bot.keyboards.inline import get_orders_paused_keyboard
                 await query.answer()
                 await UIManager.show_screen(
                     bot=query.message.bot,
                     session=session,
                     chat_id=query.message.chat.id,
-                    text=closed_notice
+                    text=closed_notice,
+                    markup=get_orders_paused_keyboard()
                 )
                 await state.clear()
                 await state.update_data(current_view="closed")
@@ -655,6 +665,19 @@ async def phone_input_handler(message: types.Message, state: FSMContext, session
         else:
             phone = message.text.strip()
 
+        if phone == "🔙 Назад":
+            from bot.keyboards.inline import get_time_keyboard
+            await UIManager.show_screen(
+                bot=message.bot,
+                session=session,
+                chat_id=message.chat.id,
+                text=MESSAGES["time_prompt"],
+                markup=get_time_keyboard(),
+                force_reply_keyboard_remove=True
+            )
+            await state.set_state(OrderFSM.time_input)
+            return
+
         async def _show_phone_error(error_text: str):
             await UIManager.show_screen(
                 bot=message.bot,
@@ -771,6 +794,128 @@ async def notes_input_handler(message: types.Message, state: FSMContext, session
         
     await state.update_data(notes=notes)
     await _show_confirmation(message, state, session=session)
+
+@router.message(Command("phone"))
+@router.message(Command("change_phone"))
+async def change_phone_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Обробляє команду /phone для зміни номера телефону."""
+    from bot.keyboards.inline import get_phone_reply_keyboard
+    
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    logger.info(f"User {message.from_user.id} requested phone change")
+
+    # 💥 ЗАХИСТ ВІД ДУБЛІВ ТА ПЕРЕКРИТТЯ КРОКІВ
+    current_state = await state.get_state()
+    if current_state is not None and current_state != OrderFSM.menu_selection.state:
+        await UIManager.show_toast(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            text="⚠️ <b>Ти вже в процесі замовлення.</b>\nБудь ласка, закінчи або скасуй його.",
+            duration=4
+        )
+        return
+
+    active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
+    if active_order is not None:
+        await _show_active_order_screen(message.bot, session, message.chat.id, active_order, active_status)
+        return
+
+    await state.clear()
+    await UserCRUD.get_or_create(
+        session=session,
+        telegram_id=message.from_user.id,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name,
+    )
+    
+    await UIManager.show_screen(
+        bot=message.bot,
+        session=session,
+        chat_id=message.chat.id,
+        text="📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
+        markup=get_phone_reply_keyboard(),
+    )
+    await state.set_state(OrderFSM.changing_phone)
+
+
+@router.message(OrderFSM.changing_phone, F.contact | (F.text & ~F.text.startswith("/")))
+async def changing_phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Приймає новий номер телефону при виклику /phone."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    logger.info(f"User {message.from_user.id} changing phone input")
+    try:
+        from_contact = False
+        if message.contact:
+            phone = message.contact.phone_number
+            from_contact = True
+        else:
+            phone = message.text.strip()
+
+        if phone == "🔙 Назад":
+            await state.clear()
+            msg = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            await start_handler(message, state, session, is_callback=False)
+            return
+
+        async def _show_phone_error(error_text: str):
+            await UIManager.show_screen(
+                bot=message.bot,
+                session=session,
+                chat_id=message.chat.id,
+                text=f"⚠️ <b>{error_text}</b>\n\n📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
+                markup=get_phone_reply_keyboard()
+            )
+
+        if not from_contact and not validate_phone(phone):
+            await _show_phone_error("Некоректний номер телефону. Спробуй ще раз.")
+            return
+
+        normalized_phone = normalize_phone(phone)
+        await UserCRUD.update_phone(session=session, telegram_id=message.from_user.id, phone=normalized_phone)
+
+        await state.clear()
+
+        await UIManager.show_screen(
+            bot=message.bot,
+            session=session,
+            chat_id=message.chat.id,
+            text=f"✅ <b>Номер телефону успішно змінено на {normalized_phone}!</b>\n\nТепер для всіх твоїх нових замовлень буде використовуватись цей номер.",
+            markup=get_view_menu_reply_keyboard(),
+        )
+    except Exception as e:
+        logger.error(f"Error in changing_phone_input_handler: {e}")
+        try:
+            await _show_phone_error("Технічна помилка. Спробуй ще раз.")
+        except Exception:
+            pass
+
+
+@router.message(F.text.in_({"☕ Переглянути меню", "☕️ Переглянути меню"}))
+async def view_menu_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Обробляє натискання кнопки '☕ Переглянути меню'."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    logger.info(f"User {message.from_user.id} clicked view menu button")
+    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
+    await _send_menu(
+        message,
+        state,
+        session,
+        favorite_drink_name=getattr(user, "favorite_drink_name", None),
+    )
+
 
 @router.message(StateFilter(
     OrderFSM.menu_selection, 
@@ -904,11 +1049,13 @@ async def open_favorite_order_handler(
         if not (start_work <= current_time <= end_work):
             nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
             nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+            from bot.keyboards.inline import get_orders_paused_keyboard
             await UIManager.show_screen(
                 bot=query.message.bot,
                 session=session,
                 chat_id=query.message.chat.id,
-                text=_format_closed_notice(nice_open, nice_close)
+                text=_format_closed_notice(nice_open, nice_close),
+                markup=get_orders_paused_keyboard()
             )
             await query.answer()
             await state.clear()
@@ -962,6 +1109,36 @@ async def confirm_order_handler(
             await state.clear()
             await state.update_data(current_view="orders_paused")
             return
+            
+        from datetime import datetime, time
+        from bot.services.google_sheets import get_sheets_service
+        sheets_service = await get_sheets_service()
+        config = await sheets_service.get_business_config()
+        open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+        close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+        try:
+            open_parts = open_time_str.split(":")
+            close_parts = close_time_str.split(":")
+            start_work = time(int(open_parts[0]), int(open_parts[1]))
+            end_work = time(int(close_parts[0]), int(close_parts[1]))
+            current_time = datetime.now().time()
+            if not (start_work <= current_time <= end_work):
+                nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
+                nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+                from bot.keyboards.inline import get_orders_paused_keyboard
+                await UIManager.show_screen(
+                    bot=query.message.bot,
+                    session=session,
+                    chat_id=query.message.chat.id,
+                    text=_format_closed_notice(nice_open, nice_close),
+                    markup=get_orders_paused_keyboard()
+                )
+                await query.answer()
+                await state.clear()
+                await state.update_data(current_view="closed")
+                return
+        except Exception as e:
+            logger.error(f"Error checking time in confirm_order_handler: {e}")
 
         active_order, active_status = await _get_active_order_state(session=session, telegram_id=query.from_user.id)
         if active_order is not None:
@@ -1210,12 +1387,14 @@ async def new_order_handler(message: types.Message, state: FSMContext, session: 
         if not (start_work <= current_time <= end_work):
             nice_open = f"{start_work.hour:02d}:{start_work.minute:02d}"
             nice_close = f"{end_work.hour:02d}:{end_work.minute:02d}"
+            from bot.keyboards.inline import get_orders_paused_keyboard
             await UIManager.show_screen(
                 bot=message.bot,
                 session=session,
                 chat_id=message.chat.id,
                 text=_format_closed_notice(nice_open, nice_close),
-                markup=get_new_order_reply_keyboard(),
+                markup=get_orders_paused_keyboard(),
+                force_reply_keyboard_remove=True
             )
             await state.clear()
             await state.update_data(current_view="closed")
@@ -1377,9 +1556,8 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
     formatted_message = client_message.format(order_number=order_number)
 
     try:
-        markup = get_new_order_inline_keyboard()
-        
         force_new_msg = status_key in ["rdy", "canc"]
+        markup = get_new_order_inline_keyboard() if force_new_msg else None
         
         msg = await UIManager.show_screen(
             bot=query.message.bot,
@@ -1417,118 +1595,6 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
 # ==========================================
 
 
-@router.message(Command("phone"))
-@router.message(Command("change_phone"))
-async def change_phone_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
-    """Обробляє команду /phone для зміни номера телефону."""
-    from bot.keyboards.inline import get_phone_reply_keyboard
-    
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    logger.info(f"User {message.from_user.id} requested phone change")
-
-    # 💥 ЗАХИСТ ВІД ДУБЛІВ ТА ПЕРЕКРИТТЯ КРОКІВ
-    current_state = await state.get_state()
-    if current_state is not None:
-        await UIManager.show_toast(
-            bot=message.bot,
-            chat_id=message.chat.id,
-            text="⚠️ <b>Ти вже в процесі замовлення.</b>\nБудь ласка, закінчи або скасуй його.",
-            duration=4
-        )
-        return
-
-    active_order, active_status = await _get_active_order_state(session=session, telegram_id=message.from_user.id)
-    if active_order is not None:
-        await _show_active_order_screen(message.bot, session, message.chat.id, active_order, active_status)
-        return
-
-    await state.clear()
-    await UserCRUD.get_or_create(
-        session=session,
-        telegram_id=message.from_user.id,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name,
-    )
-    
-    await UIManager.show_screen(
-        bot=message.bot,
-        session=session,
-        chat_id=message.chat.id,
-        text="📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
-        markup=get_phone_reply_keyboard(),
-    )
-    await state.set_state(OrderFSM.changing_phone)
-
-
-@router.message(OrderFSM.changing_phone, F.contact | (F.text & ~F.text.startswith("/")))
-async def changing_phone_input_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
-    """Приймає новий номер телефону при виклику /phone."""
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    logger.info(f"User {message.from_user.id} changing phone input")
-    try:
-        from_contact = False
-        if message.contact:
-            phone = message.contact.phone_number
-            from_contact = True
-        else:
-            phone = message.text.strip()
-
-        async def _show_phone_error(error_text: str):
-            await UIManager.show_screen(
-                bot=message.bot,
-                session=session,
-                chat_id=message.chat.id,
-                text=f"⚠️ <b>{error_text}</b>\n\n📱 <b>Введи новий номер телефону</b> (наприклад: 0501234567) або скористайся кнопкою внизу:",
-                markup=get_phone_reply_keyboard()
-            )
-
-        if not from_contact and not validate_phone(phone):
-            await _show_phone_error("Некоректний номер телефону. Спробуй ще раз.")
-            return
-
-        normalized_phone = normalize_phone(phone)
-        await UserCRUD.update_phone(session=session, telegram_id=message.from_user.id, phone=normalized_phone)
-
-        await state.clear()
-
-        await UIManager.show_screen(
-            bot=message.bot,
-            session=session,
-            chat_id=message.chat.id,
-            text=f"✅ <b>Номер телефону успішно змінено на {normalized_phone}!</b>\n\nТепер для всіх твоїх нових замовлень буде використовуватись цей номер.",
-            markup=get_view_menu_reply_keyboard(),
-        )
-    except Exception as e:
-        logger.error(f"Error in changing_phone_input_handler: {e}")
-        try:
-            await _show_phone_error("Технічна помилка. Спробуй ще раз.")
-        except Exception:
-            pass
-
-
-@router.message(F.text.in_({"☕ Переглянути меню", "☕️ Переглянути меню"}))
-async def view_menu_handler(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
-    """Обробляє натискання кнопки '☕ Переглянути меню'."""
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    logger.info(f"User {message.from_user.id} clicked view menu button")
-    user = await UserCRUD.get_by_telegram_id(session=session, telegram_id=message.from_user.id)
-    await _send_menu(
-        message,
-        state,
-        session,
-        favorite_drink_name=getattr(user, "favorite_drink_name", None),
-    )
-
-
 # ==========================================
 # ГЛОБАЛЬНИЙ СМІТТЄЗБІРНИК
 # ==========================================
@@ -1543,6 +1609,45 @@ async def global_trash_catcher(message: types.Message) -> None:
         await message.delete()
     except Exception:
         pass
+
+@router.callback_query(F.data == "view_menu_only")
+async def view_menu_only_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Показує меню для перегляду, коли кав'ярня зачинена."""
+    from bot.database.crud import SystemSettingCRUD
+    from datetime import datetime, time
+    
+    from bot.services.google_sheets import get_sheets_service
+    sheets_service = await get_sheets_service()
+    config = await sheets_service.get_business_config()
+    open_time_str = config.get("CAFE_OPEN_TIME", "09:00")
+    close_time_str = config.get("CAFE_CLOSE_TIME", "23:59")
+    
+    try:
+        open_parts = open_time_str.split(":")
+        close_parts = close_time_str.split(":")
+        start_work = time(int(open_parts[0]), int(open_parts[1]))
+        end_work = time(int(close_parts[0]), int(close_parts[1]))
+        current_time = datetime.now().time()
+        
+        if not (start_work <= current_time <= end_work):
+            await query.answer("⚠️ Кав'ярня досі зачинена! Спробуйте натиснути пізніше.", show_alert=True)
+            return
+    except Exception as e:
+        logger.error(f"Error checking time in view_menu: {e}")
+        
+    await query.answer()
+    logger.info(f"User {query.from_user.id} requested to view menu while paused")
+    
+    from bot.database.crud import UserCRUD
+    user = await UserCRUD.get_by_telegram_id(session, query.from_user.id)
+    
+    await _send_menu(
+        message=query.message,
+        state=state,
+        session=session,
+        favorite_drink_name=getattr(user, "favorite_drink_name", None),
+        ignore_pause=False
+    )
 
     # ==========================================
 # ГЛОБАЛЬНИЙ ПЕРЕХОПЛЮВАЧ "МЕРТВИХ" КНОПОК

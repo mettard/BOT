@@ -143,7 +143,10 @@ def get_time_keyboard() -> InlineKeyboardMarkup:
 def get_phone_reply_keyboard() -> ReplyKeyboardMarkup:
     """Нижня кнопка ТІЛЬКИ для контакту."""
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Надіслати мій номер", request_contact=True)]],
+        keyboard=[
+            [KeyboardButton(text="📱 Надіслати мій номер", request_contact=True)],
+            [KeyboardButton(text="🔙 Назад")]
+        ],
         resize_keyboard=True,
         one_time_keyboard=True
     )
@@ -162,6 +165,12 @@ def get_new_order_inline_keyboard() -> InlineKeyboardMarkup:
     """Inline keyboard for starting a new order from a status message."""
     builder = InlineKeyboardBuilder()
     builder.button(text="☕ Нове замовлення", callback_data="new_order_inline")
+    return builder.as_markup()
+
+def get_orders_paused_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for paused screen to allow viewing menu."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📋 Переглянути меню", callback_data="view_menu_only")
     return builder.as_markup()
 
 def get_admin_stop_orders_reply_keyboard(is_paused: bool = False) -> ReplyKeyboardMarkup:
