@@ -174,13 +174,17 @@ async def resume_orders_handler(message: types.Message, session: AsyncSession) -
 
     client_keyboard = get_start_menu_inline_keyboard()
 
+    from bot.services.ui_manager import UIManager
+
     for user_id in waiting_users:
         try:
-            await message.bot.send_message(
+            await UIManager.show_screen(
+                bot=message.bot,
+                session=session,
                 chat_id=user_id,
                 text="☕️ <b>Кав'ярня знову приймає замовлення!</b>\n\nЗапрошуємо обрати свій улюблений напій. Натисніть кнопку внизу! 🎉",
-                parse_mode="HTML",
-                reply_markup=client_keyboard,
+                markup=client_keyboard,
+                force_new=True
             )
             notified_count += 1
         except Exception as e:

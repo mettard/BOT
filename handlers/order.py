@@ -732,7 +732,7 @@ async def _show_confirmation(
     show_save_favorite = bool(user) and not favorite_flow and not _is_current_favorite(user, drink, data.get("phone", ""), notes)
     keyboard = get_confirmation_keyboard(
         show_save_favorite=show_save_favorite,
-        allow_back_to_notes=not favorite_flow,
+        back_button_type="time" if favorite_flow else "notes",
     )
 
     bot = message_or_query.bot if isinstance(message_or_query, types.Message) else message_or_query.message.bot
@@ -756,7 +756,20 @@ async def notes_input_handler(message: types.Message, state: FSMContext, session
     except Exception:
         pass
     logger.info(f"User {message.from_user.id} entered notes: {message.text}")
-    await state.update_data(notes=message.text.strip())
+    notes = message.text.strip()
+    
+    if len(notes) > 100:
+        from bot.keyboards.inline import get_notes_keyboard
+        await UIManager.show_screen(
+            bot=message.bot,
+            session=session,
+            chat_id=message.chat.id,
+            text=f"⚠️ <b>Побажання занадто довге!</b> Максимум 100 символів.\n\n{MESSAGES['notes_prompt']}",
+            markup=get_notes_keyboard()
+        )
+        return
+        
+    await state.update_data(notes=notes)
     await _show_confirmation(message, state, session=session)
 
 @router.message(StateFilter(
@@ -816,7 +829,7 @@ async def save_favorite_order_handler(
         await query.message.edit_reply_markup(
             reply_markup=get_confirmation_keyboard(
                 show_save_favorite=False,
-                allow_back_to_notes=not bool(data.get("favorite_flow", False)),
+                back_button_type="time" if bool(data.get("favorite_flow", False)) else "notes",
             )
         )
         return
@@ -834,7 +847,7 @@ async def save_favorite_order_handler(
     await query.message.edit_reply_markup(
         reply_markup=get_confirmation_keyboard(
             show_save_favorite=False,
-            allow_back_to_notes=not bool(data.get("favorite_flow", False)),
+            back_button_type="time" if bool(data.get("favorite_flow", False)) else "notes",
         )
     )
     await query.answer("⭐️ Збережено як улюблене", show_alert=False)
@@ -1126,6 +1139,22 @@ async def back_to_notes_handler(query: types.CallbackQuery, state: FSMContext, s
     await query.answer()
 
 
+@router.callback_query(StateFilter(OrderFSM.confirmation), F.data == "back_to_time")
+async def back_to_time_handler(query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Go back to time input from confirmation (usually in favorite flow)."""
+    logger.info(f"User {query.from_user.id} went back to time input")
+    from bot.keyboards.inline import get_time_keyboard
+    await UIManager.show_screen(
+        bot=query.message.bot,
+        session=session,
+        chat_id=query.message.chat.id,
+        text=MESSAGES["time_prompt"],
+        markup=get_time_keyboard()
+    )
+    await state.set_state(OrderFSM.time_input)
+    await query.answer()
+
+
 # ==========================================
 # ЧИСТИЛЬНИК СТАРИХ КНОПОК
 # ==========================================
@@ -1232,17 +1261,29 @@ async def user_cancel_active_order_handler(query: types.CallbackQuery, session: 
         # 💥 МАГІЯ: ВИДАЛЯЄМО СТАРУ КАРТКУ ЗАМОВЛЕННЯ У БАРИСТИ!
         if admin_msg_id != 0:
             try:
-                await query.bot.delete_message(chat_id=settings.admin_chat_id, message_id=admin_msg_id)
+                await query.bot.edit_message_text(
+                    chat_id=settings.admin_chat_id,
+                    message_id=admin_msg_id,
+                    text=f"❌ <b>Замовлення {order_number} скасовано клієнтом.</b>",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
             except Exception as e:
                 import logging
-                logging.error(f"Не зміг видалити повідомлення адміна: {e}")
-
-        # Відправляємо свіже повідомлення-алерт
-        await query.bot.send_message(
-            chat_id=settings.admin_chat_id,
-            text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!\n🗑 <i>Картку замовлення було видалено.</i>",
-            parse_mode="HTML"
-        )
+                logging.error(f"Не зміг відредагувати повідомлення адміна: {e}")
+                # Якщо не вийшло відредагувати (наприклад повідомлення застаре), надсилаємо нове
+                await query.bot.send_message(
+                    chat_id=settings.admin_chat_id,
+                    text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!",
+                    parse_mode="HTML"
+                )
+        else:
+            # Якщо admin_msg_id = 0 (стара сесія), просто надсилаємо нове
+            await query.bot.send_message(
+                chat_id=settings.admin_chat_id,
+                text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!",
+                parse_mode="HTML"
+            )
         
         await UIManager.show_screen(
             bot=query.message.bot,

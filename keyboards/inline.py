@@ -40,7 +40,7 @@ def get_menu_keyboard(menu_items: list[dict], favorite_drink_name: str | None = 
 
 def get_confirmation_keyboard(
     show_save_favorite: bool = False,
-    allow_back_to_notes: bool = True,
+    back_button_type: str = "notes",  # "notes", "time", or "none"
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for order confirmation.
     
@@ -58,14 +58,16 @@ def get_confirmation_keyboard(
     builder.button(text="✅ Підтвердити", callback_data="confirm_order")
     builder.button(text="❌ Скасувати", callback_data="cancel_order")
 
-    if allow_back_to_notes:
+    if back_button_type == "notes":
         builder.button(text="🔙 Назад", callback_data="back_to_notes")
+    elif back_button_type == "time":
+        builder.button(text="🔙 Назад", callback_data="back_to_time")
 
-    if show_save_favorite and allow_back_to_notes:
+    if show_save_favorite and back_button_type != "none":
         builder.adjust(1, 2, 1)
     elif show_save_favorite:
         builder.adjust(1, 2)
-    elif allow_back_to_notes:
+    elif back_button_type != "none":
         builder.adjust(2, 1)
     else:
         builder.adjust(2)
