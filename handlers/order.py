@@ -411,7 +411,8 @@ async def cancel_handler(message_or_query: types.Message | types.CallbackQuery, 
             session=session,
             chat_id=chat_id,
             text=text,
-            markup=markup
+            markup=markup,
+            force_reply_keyboard_remove=remove_reply_keyboard
         )
 
         await state.clear()
