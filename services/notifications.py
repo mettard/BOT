@@ -58,7 +58,7 @@ class AdminNotificationService:
             notes_text = f"📝 <b>Побажання:</b> <i>{notes}</i>\n\n" if notes else ""
             # Build message text (HTML format)
             message = (
-                f"📋 <b>Нове замовлення</b>\n\n"
+                f"🔵 <b>НОВЕ ЗАМОВЛЕННЯ</b>\n\n"
                 f"<b>ID замовлення:</b> {order_number}\n"
                 f"<b>Час отримання:</b> {pickup_str}\n\n"
                 f"👤 <b>Клієнт:</b> {customer_name}\n"
@@ -66,7 +66,7 @@ class AdminNotificationService:
                 f"☕ <b>Напій:</b> {drink_name} ({volume_ml}ml)\n"
                 f"💰 <b>Ціна:</b> ₴{price}\n\n"
                 f"{notes_text}"
-                f"🔔 <b>Статус:</b> 🆕 Нове"
+                f"🔔 <b>Статус:</b> 🔵 Очікує"
             )
 
             # Build inline keyboard

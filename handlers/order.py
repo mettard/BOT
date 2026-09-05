@@ -1413,12 +1413,15 @@ async def user_cancel_active_order_handler(query: types.CallbackQuery, session: 
     order_number = parts[1]
     admin_msg_id = int(parts[2]) if len(parts) > 2 else 0
     
-    await query.message.edit_reply_markup(reply_markup=None)
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     
     sheets_service = await get_sheets_service()
     current_status = await sheets_service.get_order_status(order_number)
     
-    if current_status in ["🔥 Готується", "✅ Готово"]:
+    if current_status in ["🔥 Готується", "🟡 Готується", "✅ Готово", "🟡 Прийнято"]:
         await query.answer("⚠️ Сорі, бариста вже готує вашу каву! Скасувати неможливо.", show_alert=True)
         return
         
@@ -1430,31 +1433,67 @@ async def user_cancel_active_order_handler(query: types.CallbackQuery, session: 
         await sheets_service.update_order_status(order_number, "❌ Скасовано")
         
         from bot.config import settings
+        from bot.database.crud import OrderCRUD
         
-        # 💥 МАГІЯ: ВИДАЛЯЄМО СТАРУ КАРТКУ ЗАМОВЛЕННЯ У БАРИСТИ!
+        order = await OrderCRUD.get_by_order_number(session, order_number)
+        if order:
+            pickup_str = order.pickup_time.strftime("%Y-%m-%d %H:%M:%S")
+            notes_text = f"📝 <b>Побажання:</b> <i>{order.notes}</i>\n\n" if order.notes else ""
+            
+            message_text = (
+                f"❌ <b>СКАСОВАНО</b>\n\n"
+                f"<b>ID замовлення:</b> {order.order_number}\n"
+                f"<b>Час отримання:</b> {pickup_str}\n\n"
+                f"👤 <b>Клієнт:</b> {order.customer_name}\n"
+                f"📱 <b>Телефон:</b> <code>{order.phone}</code>\n\n"
+                f"☕ <b>Напій:</b> {order.drink_name} ({order.volume_ml}ml)\n"
+                f"💰 <b>Ціна:</b> ₴{order.price}\n\n"
+                f"{notes_text}"
+                f"🔔 <b>Статус:</b> ❌ Скасовано (Клієнтом)\n\n"
+                f"<i>Повідомлення буде видалено через 5 хвилин.</i>"
+            )
+        else:
+            message_text = f"❌ <b>Замовлення {order_number} скасовано клієнтом.</b>"
+        
+        # 💥 МАГІЯ: ОНОВЛЮЄМО СТАРУ КАРТКУ ЗАМОВЛЕННЯ У БАРИСТИ!
         if admin_msg_id != 0:
             try:
                 await query.bot.edit_message_text(
                     chat_id=settings.admin_chat_id,
                     message_id=admin_msg_id,
-                    text=f"❌ <b>Замовлення {order_number} скасовано клієнтом.</b>",
+                    text=message_text,
                     parse_mode="HTML",
                     reply_markup=None
                 )
+                import asyncio
+                import logging
+                async def delete_later():
+                    await asyncio.sleep(5 * 60)
+                    try:
+                        await query.bot.delete_message(chat_id=settings.admin_chat_id, message_id=admin_msg_id)
+                    except Exception as e:
+                        logging.error(f"Failed to auto-delete client cancel message: {e}")
+                
+                # Save reference to avoid garbage collection
+                if not hasattr(query.bot, 'bg_tasks'):
+                    query.bot.bg_tasks = set()
+                task = asyncio.create_task(delete_later())
+                query.bot.bg_tasks.add(task)
+                task.add_done_callback(query.bot.bg_tasks.discard)
             except Exception as e:
                 import logging
                 logging.error(f"Не зміг відредагувати повідомлення адміна: {e}")
                 # Якщо не вийшло відредагувати (наприклад повідомлення застаре), надсилаємо нове
                 await query.bot.send_message(
                     chat_id=settings.admin_chat_id,
-                    text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!",
+                    text=message_text,
                     parse_mode="HTML"
                 )
         else:
             # Якщо admin_msg_id = 0 (стара сесія), просто надсилаємо нове
             await query.bot.send_message(
                 chat_id=settings.admin_chat_id,
-                text=f"🚨 <b>УВАГА!</b> Клієнт самостійно скасував замовлення <b>{order_number}</b>!",
+                text=message_text,
                 parse_mode="HTML"
             )
         
@@ -1480,7 +1519,7 @@ from bot.keyboards.inline import get_admin_order_keyboard
 
 STATUS_MAP = {
     "acc": ("🟡 Прийнято", "Ваше замовлення <b>{order_number}</b> прийнято і скоро почне готуватися! ⏳"),
-    "prep": ("🔥 Готується", "Бариста вже чаклує над вашим замовленням <b>{order_number}</b>! ☕️"),
+    "prep": ("🟡 Готується", "Бариста вже чаклує над вашим замовленням <b>{order_number}</b>! ☕️"),
     "rdy": ("✅ Готово", "🎉 Ваша кава <b>{order_number}</b> готова! Можете забирати на барі!"),
     "canc": ("❌ Скасовано", "На жаль, ваше замовлення <b>{order_number}</b> було скасовано.")
 }
@@ -1578,10 +1617,46 @@ async def admin_status_handler(query: types.CallbackQuery, session: AsyncSession
     # 5. Оновлюємо адмінську картку баристи
     old_text = query.message.html_text
     import re
-    new_text = re.sub(r"🔔 <b>Статус:</b>.*", f"🔔 <b>Статус:</b> {status_name}", old_text)
     
-    await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)
+    barista_name = query.from_user.full_name
+    new_text = re.sub(r"🔔 <b>Статус:</b>.*", f"🔔 <b>Статус:</b> {status_name} (Бариста: {barista_name})", old_text)
+    
+    header_pattern = r"^(🔵|🟢|🟡|✅|❌|📋)\s*<b>.*?</b>\n"
+    if status_key in ["acc", "prep"]:
+        new_text = re.sub(header_pattern, "🟡 <b>В ПРОЦЕСІ</b>\n", new_text)
+    elif status_key == "rdy":
+        new_text = re.sub(header_pattern, "✅ <b>ГОТОВО</b>\n", new_text)
+        new_text += "\n\n<i>Повідомлення буде видалено через 5 хвилин.</i>"
+        new_keyboard = None
+    elif status_key == "canc":
+        new_text = re.sub(header_pattern, "❌ <b>СКАСОВАНО</b>\n", new_text)
+        new_text += "\n\n<i>Повідомлення буде видалено через 5 хвилин.</i>"
+        new_keyboard = None
+    
+    try:
+        await query.message.edit_text(new_text, parse_mode="HTML", reply_markup=new_keyboard)
+    except Exception as e:
+        import logging
+        logging.error(f"MessageNotModified or error during admin edit: {e}")
+    
     await query.answer(f"Статус змінено на {status_name}.")
+
+    if status_key in ["rdy", "canc"]:
+        import asyncio
+        import logging
+        async def delete_later():
+            await asyncio.sleep(5 * 60)
+            try:
+                await query.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
+            except Exception as e:
+                logging.error(f"Failed to auto-delete admin message: {e}")
+        
+        # Save reference to avoid garbage collection
+        if not hasattr(query.bot, 'bg_tasks'):
+            query.bot.bg_tasks = set()
+        task = asyncio.create_task(delete_later())
+        query.bot.bg_tasks.add(task)
+        task.add_done_callback(query.bot.bg_tasks.discard)
 
 
 # ==========================================
